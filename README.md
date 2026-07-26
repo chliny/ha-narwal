@@ -100,5 +100,5 @@ logger:
 ## 来源与许可
 
 本项目以 [sjmotew/NarwalIntegration](https://github.com/sjmotew/NarwalIntegration)
-的 MIT 授权局域网实现为基础，并参考了
+的局域网实现为基础，并参考了
 [rudyll/narwal_r](https://github.com/rudyll/narwal_r) 的社区研究。
