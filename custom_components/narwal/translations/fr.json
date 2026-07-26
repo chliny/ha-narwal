@@ -1,0 +1,116 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connecter un robot Narwal",
+        "description": "Choisissez le cloud pour les J3/J4/J5 et l’accès à distance, ou le réseau local pour les robots qui exposent le port WebSocket 9002.",
+        "data": {
+          "connection_type": "Mode de connexion"
+        }
+      },
+      "local": {
+        "title": "WebSocket local",
+        "description": "Le robot et Home Assistant doivent être sur le même réseau. Choisissez le modèle dans la liste ou Other / Auto-detect en cas de doute.",
+        "data": {
+          "host": "Adresse IP",
+          "port": "Port",
+          "model": "Modèle"
+        }
+      },
+      "cloud": {
+        "title": "Cloud Narwal",
+        "description": "Saisissez le numéro de mobile et le mot de passe utilisés dans l’application Narwal. La Chine continentale (indicatif 86, pays CN) est sélectionnée automatiquement. Les préfixes +86 et 0086 sont acceptés.",
+        "data": {
+          "phone": "Numéro de téléphone",
+          "password": "Mot de passe"
+        }
+      },
+      "cloud_device": {
+        "title": "Choisir un robot",
+        "data": {
+          "device_id": "Robot"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Se reconnecter à Narwal",
+        "description": "Saisissez des identifiants valides pour rétablir l’accès au cloud.",
+        "data": {
+          "phone": "Numéro de téléphone",
+          "password": "Mot de passe"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Impossible de se connecter à Narwal.",
+      "invalid_auth": "Le numéro de téléphone ou le mot de passe a été refusé.",
+      "no_devices": "Ce compte ne contient aucun robot pris en charge.",
+      "device_not_found": "Le robot configuré n’est pas associé à ce compte.",
+      "unknown": "Une erreur inattendue s’est produite."
+    },
+    "abort": {
+      "already_configured": "Ce robot est déjà configuré."
+    }
+  },
+  "entity": {
+    "vacuum": {
+      "vacuum": {
+        "name": "Aspirateur"
+      }
+    },
+    "sensor": {
+      "cleaning_area": {
+        "name": "Surface nettoyée"
+      },
+      "cleaning_time": {
+        "name": "Temps de nettoyage"
+      },
+      "firmware_version": {
+        "name": "Version du firmware"
+      },
+      "charging_state": {
+        "name": "État de charge",
+        "state": {
+          "charging": "En charge",
+          "fully_charged": "Complètement chargé",
+          "not_charging": "Pas en charge"
+        }
+      }
+    },
+    "binary_sensor": {
+      "docked": {
+        "name": "À la station",
+        "state": {
+          "on": "À la station",
+          "off": "Hors de la station"
+        }
+      },
+      "charging": {
+        "name": "En charge"
+      }
+    },
+    "button": {
+      "wash_mop": {
+        "name": "Laver les serpillières"
+      },
+      "dry_mop": {
+        "name": "Sécher les serpillières"
+      },
+      "wash_and_dry_mop": {
+        "name": "Laver et sécher les serpillières"
+      },
+      "empty_dustbin": {
+        "name": "Vider le bac à poussière"
+      }
+    },
+    "select": {
+      "mop_humidity": {
+        "name": "Humidité des serpillières",
+        "state": {
+          "dry": "Sec",
+          "normal": "Normal",
+          "wet": "Humide"
+        }
+      }
+    }
+  }
+}

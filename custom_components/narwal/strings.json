@@ -1,0 +1,116 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect a Narwal robot",
+        "description": "Choose cloud for J3/J4/J5 and remote access, or local for robots that expose WebSocket port 9002.",
+        "data": {
+          "connection_type": "Connection method"
+        }
+      },
+      "local": {
+        "title": "Local WebSocket",
+        "description": "The robot and Home Assistant must be on the same network. Model is a dropdown; choose Other / Auto-detect if unsure.",
+        "data": {
+          "host": "IP address",
+          "port": "Port",
+          "model": "Model"
+        }
+      },
+      "cloud": {
+        "title": "Narwal cloud",
+        "description": "Enter the mobile number and password used by the Narwal app. Mainland China (calling code 86, country CN) is used automatically. A leading +86 or 0086 is accepted.",
+        "data": {
+          "phone": "Phone number",
+          "password": "Password"
+        }
+      },
+      "cloud_device": {
+        "title": "Choose a robot",
+        "data": {
+          "device_id": "Robot"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Sign in to Narwal again",
+        "description": "Enter valid credentials to restore cloud access.",
+        "data": {
+          "phone": "Phone number",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to Narwal.",
+      "invalid_auth": "The phone number or password was rejected.",
+      "no_devices": "This account has no supported robot.",
+      "device_not_found": "The configured robot is not bound to this account.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This robot is already configured."
+    }
+  },
+  "entity": {
+    "vacuum": {
+      "vacuum": {
+        "name": "Vacuum"
+      }
+    },
+    "sensor": {
+      "cleaning_area": {
+        "name": "Cleaning area"
+      },
+      "cleaning_time": {
+        "name": "Cleaning time"
+      },
+      "firmware_version": {
+        "name": "Firmware version"
+      },
+      "charging_state": {
+        "name": "Charging",
+        "state": {
+          "charging": "Charging",
+          "fully_charged": "Fully charged",
+          "not_charging": "Not charging"
+        }
+      }
+    },
+    "binary_sensor": {
+      "docked": {
+        "name": "Docked",
+        "state": {
+          "on": "Docked",
+          "off": "Undocked"
+        }
+      },
+      "charging": {
+        "name": "Charging"
+      }
+    },
+    "button": {
+      "wash_mop": {
+        "name": "Wash mop pads"
+      },
+      "dry_mop": {
+        "name": "Dry mop pads"
+      },
+      "wash_and_dry_mop": {
+        "name": "Wash and dry mop pads"
+      },
+      "empty_dustbin": {
+        "name": "Empty dustbin"
+      }
+    },
+    "select": {
+      "mop_humidity": {
+        "name": "Mop humidity",
+        "state": {
+          "dry": "Dry",
+          "normal": "Normal",
+          "wet": "Wet"
+        }
+      }
+    }
+  }
+}

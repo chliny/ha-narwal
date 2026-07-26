@@ -1,0 +1,116 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "连接云鲸机器人",
+        "description": "J3/J4/J5 或远程访问请选择云端；支持 9002 端口的型号可选择局域网连接。",
+        "data": {
+          "connection_type": "连接方式"
+        }
+      },
+      "local": {
+        "title": "局域网 WebSocket",
+        "description": "机器人和 Home Assistant 必须位于同一网络。型号为下拉选择；不确定时请选择“Other / Auto-detect”自动识别。",
+        "data": {
+          "host": "IP 地址",
+          "port": "端口",
+          "model": "型号"
+        }
+      },
+      "cloud": {
+        "title": "云鲸云端",
+        "description": "输入云鲸 App 使用的手机号和密码。集成默认使用中国大陆（国际区号 86、国家代码 CN），也可输入以 +86 或 0086 开头的手机号。",
+        "data": {
+          "phone": "手机号",
+          "password": "密码"
+        }
+      },
+      "cloud_device": {
+        "title": "选择机器人",
+        "data": {
+          "device_id": "机器人"
+        }
+      },
+      "reauth_confirm": {
+        "title": "重新登录云鲸",
+        "description": "请输入有效凭据以恢复云端连接。",
+        "data": {
+          "phone": "手机号",
+          "password": "密码"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接云鲸服务或机器人。",
+      "invalid_auth": "手机号或密码错误。",
+      "no_devices": "该账号下没有支持的机器人。",
+      "device_not_found": "该账号下没有已配置的机器人。",
+      "unknown": "发生未知错误。"
+    },
+    "abort": {
+      "already_configured": "该机器人已配置。"
+    }
+  },
+  "entity": {
+    "vacuum": {
+      "vacuum": {
+        "name": "扫拖机器人"
+      }
+    },
+    "sensor": {
+      "cleaning_area": {
+        "name": "清扫面积"
+      },
+      "cleaning_time": {
+        "name": "清扫时间"
+      },
+      "firmware_version": {
+        "name": "固件版本"
+      },
+      "charging_state": {
+        "name": "充电状态",
+        "state": {
+          "charging": "充电中",
+          "fully_charged": "已充满",
+          "not_charging": "未充电"
+        }
+      }
+    },
+    "binary_sensor": {
+      "docked": {
+        "name": "已回基站",
+        "state": {
+          "on": "已回基站",
+          "off": "离开基站"
+        }
+      },
+      "charging": {
+        "name": "充电中"
+      }
+    },
+    "button": {
+      "wash_mop": {
+        "name": "清洗拖布"
+      },
+      "dry_mop": {
+        "name": "烘干拖布"
+      },
+      "wash_and_dry_mop": {
+        "name": "清洗并烘干拖布"
+      },
+      "empty_dustbin": {
+        "name": "基站集尘"
+      }
+    },
+    "select": {
+      "mop_humidity": {
+        "name": "拖布湿度",
+        "state": {
+          "dry": "偏干",
+          "normal": "标准",
+          "wet": "偏湿"
+        }
+      }
+    }
+  }
+}

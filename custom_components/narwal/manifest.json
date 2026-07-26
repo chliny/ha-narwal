@@ -1,0 +1,18 @@
+{
+  "domain": "narwal",
+  "name": "云鲸智能",
+  "codeowners": ["@chliny"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/chliny/ha-narwal",
+  "integration_type": "device",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/chliny/ha-narwal/issues",
+  "requirements": [
+    "bbpb>=1.4.0",
+    "Pillow>=9.0.0",
+    "paho-mqtt==2.1.0",
+    "websockets>=15.0.1"
+  ],
+  "version": "0.1.0"
+}

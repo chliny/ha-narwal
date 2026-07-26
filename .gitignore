@@ -1,0 +1,11 @@
+# Reverse-engineering artifacts and secrets
+analysis/
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
