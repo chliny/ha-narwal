@@ -95,11 +95,26 @@
       "dry_mop": {
         "name": "Sécher les serpillières"
       },
-      "wash_and_dry_mop": {
-        "name": "Laver et sécher les serpillières"
-      },
       "empty_dustbin": {
         "name": "Vider le bac à poussière"
+      }
+    },
+    "switch": {
+      "wash_and_dry_mop": {
+        "name": "Laver et sécher les serpillières"
+      }
+    },
+    "event": {
+      "notification": {
+        "name": "Notification du robot",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "notification": "Notification",
+              "consumable": "Rappel de consommable"
+            }
+          }
+        }
       }
     },
     "select": {

@@ -45,14 +45,6 @@ BUTTON_DESCRIPTIONS = (
     ),
 )
 
-WASH_AND_DRY_DESCRIPTION = NarwalButtonEntityDescription(
-    key="wash_and_dry_mop",
-    translation_key="wash_and_dry_mop",
-    icon="mdi:washing-machine",
-    action=lambda client: client.wash_and_dry_mop(),
-)
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
@@ -65,7 +57,7 @@ async def async_setup_entry(
         and entry.data[CONF_MODEL] == "Narwal J3"
     )
     descriptions = (
-        (WASH_AND_DRY_DESCRIPTION, BUTTON_DESCRIPTIONS[-1])
+        (BUTTON_DESCRIPTIONS[-1],)
         if is_j3_cloud
         else BUTTON_DESCRIPTIONS
     )

@@ -220,6 +220,48 @@ class NarwalCloudClient(NarwalClient):
             and self.last_broadcast_age <= _CLOUD_REACHABILITY_TIMEOUT
         )
 
+    async def get_cloud_metadata(self) -> None:
+        """Refresh consumable lifetimes and device notifications."""
+        device = self.cloud_device
+        if device is None:
+            raise NarwalConnectionError("Cloud device metadata is unavailable")
+        consumables, notifications = await asyncio.gather(
+            self._api.consumables(
+                device_id=device.device_id,
+                product_id=device.product_id,
+            ),
+            self._api.notifications(
+                device_id=device.device_id,
+                product_id=device.product_id,
+            ),
+            return_exceptions=True,
+        )
+        errors: list[BaseException] = []
+        if isinstance(consumables, BaseException):
+            errors.append(consumables)
+            _LOGGER.debug(
+                "Narwal consumable refresh failed: %s",
+                consumables,
+            )
+        else:
+            self.state.consumables = {item.key: item for item in consumables}
+        if isinstance(notifications, BaseException):
+            errors.append(notifications)
+            _LOGGER.debug(
+                "Narwal notification refresh failed: %s",
+                notifications,
+            )
+        else:
+            self.state.notifications = notifications
+        if any(isinstance(error, NarwalCloudAuthError) for error in errors):
+            raise NarwalAuthenticationError(
+                "Narwal cloud credentials were rejected"
+            )
+        if len(errors) == 2:
+            raise NarwalConnectionError(
+                "Cannot refresh Narwal cloud metadata"
+            ) from errors[0]
+
     async def connect(self) -> None:
         """Login, discover the broker, and open MQTT5 over TLS."""
         if self.connected:

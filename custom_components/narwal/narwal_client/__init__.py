@@ -15,7 +15,16 @@ from .cloud_api import (
 )
 from .cloud_client import NarwalCloudClient
 from .const import CommandResult, FanLevel, MopHumidity, WorkingStatus
-from .models import CommandResponse, DeviceInfo, MapData, MapDisplayData, NarwalState, RoomInfo
+from .models import (
+    CommandResponse,
+    ConsumableInfo,
+    DeviceInfo,
+    MapData,
+    MapDisplayData,
+    NarwalNotification,
+    NarwalState,
+    RoomInfo,
+)
 from .protocol import build_frame, parse_frame
 
 __all__ = [
@@ -30,8 +39,10 @@ __all__ = [
     "NarwalConnectionError",
     "NarwalAuthenticationError",
     "NarwalState",
+    "NarwalNotification",
     "CommandResponse",
     "CommandResult",
+    "ConsumableInfo",
     "DeviceInfo",
     "FanLevel",
     "MapData",

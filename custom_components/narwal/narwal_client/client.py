@@ -1191,6 +1191,17 @@ class NarwalClient:
         """
         return await self.send_command(TOPIC_CMD_FORCE_END, timeout=timeout)
 
+    async def end_wash_and_dry_mop(
+        self,
+        timeout: float = 15.0,
+    ) -> CommandResponse:
+        """End the station wash-and-dry task.
+
+        The Android app sends ForceEndTask.Request with an empty ``tasks``
+        field for the combined station flow.
+        """
+        return await self.send_command(TOPIC_CMD_FORCE_END, timeout=timeout)
+
     async def cancel(self) -> CommandResponse:
         """Cancel current task."""
         return await self.send_command(TOPIC_CMD_CANCEL)

@@ -124,6 +124,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         except Exception:
             _LOGGER.debug("Could not fetch initial map")
 
+        await self._async_refresh_cloud_metadata()
+
         # Subscribe to broadcast topics (display_map, working_status, etc.)
         # Must be sent before listener starts so display_map flows during cleaning.
         try:
@@ -155,6 +157,21 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             _LOGGER.info(
                 "Robot asleep — fast polling every %ds until it responds",
                 int(FAST_POLL_INTERVAL.total_seconds()),
+            )
+
+    async def _async_refresh_cloud_metadata(self) -> None:
+        """Refresh optional cloud-only data without affecting robot control."""
+        if not isinstance(self.client, NarwalCloudClient):
+            return
+        try:
+            await self.client.get_cloud_metadata()
+        except NarwalAuthenticationError:
+            _LOGGER.warning("Narwal cloud credentials require reauthentication")
+            self.config_entry.async_start_reauth(self.hass)
+        except Exception:
+            _LOGGER.debug(
+                "Could not refresh Narwal consumables or notifications",
+                exc_info=True,
             )
 
     async def _async_listen(self) -> None:
@@ -285,6 +302,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             await self.client.get_status(full_update=True)
         except Exception as err:
             self._consecutive_failures += 1
+            await self._async_refresh_cloud_metadata()
             if self._consecutive_failures >= self._max_failures:
                 raise UpdateFailed(
                     f"Vacuum unreachable for {self._consecutive_failures} consecutive polls"
@@ -296,6 +314,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             return self.client.state  # stale data keeps entities available
         else:
             self._consecutive_failures = 0
+
+        await self._async_refresh_cloud_metadata()
 
         # Retry map fetch if it failed during setup
         if self.client.state.map_data is None:

@@ -95,11 +95,26 @@
       "dry_mop": {
         "name": "烘干拖布"
       },
-      "wash_and_dry_mop": {
-        "name": "清洗并烘干拖布"
-      },
       "empty_dustbin": {
         "name": "基站集尘"
+      }
+    },
+    "switch": {
+      "wash_and_dry_mop": {
+        "name": "清洗并烘干拖布"
+      }
+    },
+    "event": {
+      "notification": {
+        "name": "机器人通知",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "notification": "通知",
+              "consumable": "耗材提醒"
+            }
+          }
+        }
       }
     },
     "select": {

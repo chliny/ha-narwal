@@ -484,6 +484,68 @@ class CommandResponse:
         return self.result_code == CommandResult.NOT_APPLICABLE
 
 
+@dataclass(frozen=True, slots=True)
+class ConsumableInfo:
+    """Consumable lifetime returned by the Narwal app cloud API."""
+
+    key: str
+    name: str
+    type_id: int
+    category: int
+    total_duration: int
+    usage_duration: int
+    subtitle: str = ""
+    code: str = ""
+
+    @property
+    def remaining_percentage(self) -> int | None:
+        """Return the app-compatible remaining lifetime percentage."""
+        if self.total_duration <= 0:
+            return None
+        remaining = (self.total_duration - self.usage_duration) / self.total_duration
+        return max(0, min(100, round(remaining * 100)))
+
+
+@dataclass(frozen=True, slots=True)
+class NarwalNotification:
+    """A device message synchronized from the Narwal cloud."""
+
+    message_id: str
+    title: str = field(default="", repr=False)
+    content: str = field(default="", repr=False)
+    created_at: int = 0
+    is_read: bool = False
+    device_id: str = field(default="", repr=False)
+
+    @property
+    def category(self) -> str:
+        """Classify consumable reminders while preserving other messages."""
+        text = f"{self.title} {self.content}".casefold()
+        consumable_terms = (
+            "耗材",
+            "用尽",
+            "更换",
+            "滤网",
+            "边刷",
+            "滚刷",
+            "拖布",
+            "尘袋",
+            "清洁剂",
+            "consumable",
+            "replace",
+            "filter",
+            "brush",
+            "mop",
+            "dust bag",
+            "detergent",
+        )
+        return (
+            "consumable"
+            if any(term in text for term in consumable_terms)
+            else "notification"
+        )
+
+
 @dataclass
 class NarwalState:
     """Complete state of a Narwal vacuum.
@@ -501,6 +563,10 @@ class NarwalState:
 
     # Device identity
     device_info: DeviceInfo | None = None
+
+    # Cloud metadata (empty for local-only connections).
+    consumables: dict[str, ConsumableInfo] = field(default_factory=dict)
+    notifications: list[NarwalNotification] = field(default_factory=list)
 
     # Session
     session_id: str = ""

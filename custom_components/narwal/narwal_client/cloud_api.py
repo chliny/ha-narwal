@@ -11,6 +11,8 @@ from typing import Any
 
 from aiohttp import ClientError, ClientResponseError, ClientSession
 
+from .models import ConsumableInfo, NarwalNotification
+
 APP_VERSION = "2.6.90"
 VERSION_CODE = "2137"
 DEFAULT_BASE_URL = "https://cn-app.narwaltech.com"
@@ -75,7 +77,12 @@ class NarwalCloudApi:
         self._base_url = base_url.rstrip("/")
         self.account: CloudAccount | None = None
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(
+        self,
+        *,
+        device_id: str = "",
+        product_id: str = "",
+    ) -> dict[str, str]:
         account = self.account
         return {
             "APP-VERSION": APP_VERSION,
@@ -85,9 +92,9 @@ class NarwalCloudApi:
             "app_version": APP_VERSION,
             "country_code": self._country_code,
             "language_code": "zh_CN",
-            "did": "",
+            "did": device_id,
             "Authorization": "",
-            "Aiot-Application-Id": "",
+            "Aiot-Application-Id": product_id,
             "isMainland": "true",
             "is_beta": "false",
             "app_type": "normal",
@@ -104,6 +111,8 @@ class NarwalCloudApi:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, str] | None = None,
+        device_id: str = "",
+        product_id: str = "",
     ) -> Any:
         try:
             async with self._session.request(
@@ -111,7 +120,10 @@ class NarwalCloudApi:
                 f"{self._base_url}{path}",
                 json=json,
                 params=params,
-                headers=self._headers(),
+                headers=self._headers(
+                    device_id=device_id,
+                    product_id=product_id,
+                ),
                 timeout=25,
             ) as response:
                 response.raise_for_status()
@@ -136,7 +148,8 @@ class NarwalCloudApi:
             raise NarwalCloudError(
                 f"Narwal cloud rejected request (code={code})"
             )
-        return body.get("result")
+        result = body.get("result")
+        return body.get("data") if result is None and "data" in body else result
 
     async def login(self) -> CloudAccount:
         """Authenticate with the same password flow used by the Android app."""
@@ -206,3 +219,114 @@ class NarwalCloudApi:
         if not isinstance(result, str) or not result:
             raise NarwalCloudError("Broker discovery returned no endpoint")
         return result
+
+    async def consumables(
+        self,
+        *,
+        device_id: str,
+        product_id: str,
+    ) -> list[ConsumableInfo]:
+        """Return consumable lifetimes using the app's v3 list endpoint."""
+        if self.account is None:
+            await self.login()
+        result = await self._request(
+            "POST",
+            "/consumables-management-app-server/v3/consumables/list",
+            json={
+                "product_id": product_id,
+                "device_id": device_id,
+                "language": "zh_CN",
+                "is_up_down_water": 0,
+            },
+            device_id=device_id,
+            product_id=product_id,
+        )
+        if isinstance(result, dict):
+            values = next(
+                (
+                    result[key]
+                    for key in (
+                        "consumable_list",
+                        "consumables",
+                        "list",
+                        "data_list",
+                    )
+                    if isinstance(result.get(key), list)
+                ),
+                [],
+            )
+        else:
+            values = result if isinstance(result, list) else []
+
+        consumables: list[ConsumableInfo] = []
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            type_id = _as_int(value.get("type"))
+            code = str(value.get("consumables_code") or "")
+            key = code or f"type_{type_id}"
+            consumables.append(
+                ConsumableInfo(
+                    key=key,
+                    name=str(value.get("name") or f"Consumable {type_id}"),
+                    type_id=type_id,
+                    category=_as_int(value.get("item_type")),
+                    total_duration=_as_int(value.get("total_duration")),
+                    usage_duration=_as_int(value.get("usage_duration")),
+                    subtitle=str(value.get("subtitle") or ""),
+                    code=code,
+                )
+            )
+        return consumables
+
+    async def notifications(
+        self,
+        *,
+        device_id: str,
+        product_id: str,
+        page_count: int = 20,
+    ) -> list[NarwalNotification]:
+        """Return the latest device messages from the Narwal cloud."""
+        if self.account is None:
+            await self.login()
+        result = await self._request(
+            "GET",
+            "/app-message-server/v1/device-message/oneDeviceListPage",
+            params={
+                "device_id": device_id,
+                "page": "1",
+                "page_count": str(page_count),
+                "app_language": "zh_CN",
+            },
+            device_id=device_id,
+            product_id=product_id,
+        )
+        values = result.get("message_list", []) if isinstance(result, dict) else []
+        if not isinstance(values, list):
+            return []
+        messages: list[NarwalNotification] = []
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            message_id = str(value.get("msg_id") or value.get("id") or "")
+            if not message_id:
+                continue
+            messages.append(
+                NarwalNotification(
+                    message_id=message_id,
+                    title=str(value.get("msg_title") or ""),
+                    content=str(value.get("msg_content") or ""),
+                    created_at=_as_int(value.get("created_time")),
+                    is_read=bool(value.get("is_read", False)),
+                    device_id=str(value.get("device_id") or device_id),
+                )
+            )
+        return messages
+
+
+def _as_int(value: Any) -> int:
+    """Convert a loosely typed cloud field to an integer."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0

@@ -95,11 +95,26 @@
       "dry_mop": {
         "name": "Dry mop pads"
       },
-      "wash_and_dry_mop": {
-        "name": "Wash and dry mop pads"
-      },
       "empty_dustbin": {
         "name": "Empty dustbin"
+      }
+    },
+    "switch": {
+      "wash_and_dry_mop": {
+        "name": "Wash and dry mop pads"
+      }
+    },
+    "event": {
+      "notification": {
+        "name": "Robot notification",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "notification": "Notification",
+              "consumable": "Consumable reminder"
+            }
+          }
+        }
       }
     },
     "select": {
