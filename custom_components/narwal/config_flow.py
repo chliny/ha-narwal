@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import voluptuous as vol
@@ -11,63 +10,24 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_AREA_CODE,
-    CONF_CONNECTION_TYPE,
     CONF_COUNTRY_CODE,
     CONF_MODEL,
     CONF_PASSWORD,
     CONF_PHONE,
     CONF_PRODUCT_KEY,
-    CONNECTION_CLOUD,
-    CONNECTION_LOCAL,
     DEFAULT_AREA_CODE,
     DEFAULT_COUNTRY_CODE,
-    DEFAULT_PORT,
     DOMAIN,
     NARWAL_MODELS,
 )
 from .narwal_client import (
     CloudDevice,
-    NarwalClient,
     NarwalCloudApi,
     NarwalCloudAuthError,
     NarwalCloudError,
 )
 
-_LOGGER = logging.getLogger(__name__)
-
-LOCAL_MODEL_OPTIONS = (
-    "Narwal Flow",
-    "Narwal Flow 2",
-    "Narwal Freo Z10 Ultra",
-    "Narwal Freo X10 Pro",
-    "Other / Auto-detect",
-)
-
 STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required(
-            CONF_CONNECTION_TYPE,
-            default=CONNECTION_CLOUD,
-        ): vol.In(
-            {
-                CONNECTION_CLOUD: "Narwal cloud (J3/J4/J5 and remote access)",
-                CONNECTION_LOCAL: "Local WebSocket (supported LAN models)",
-            }
-        ),
-    }
-)
-
-STEP_LOCAL_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required("host"): str,
-        vol.Optional("port", default=DEFAULT_PORT): int,
-        vol.Required(CONF_MODEL, default="Other / Auto-detect"): vol.In(
-            LOCAL_MODEL_OPTIONS
-        ),
-    }
-)
-
-STEP_CLOUD_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_PHONE): str,
         vol.Required(CONF_PASSWORD): str,
@@ -97,7 +57,7 @@ def _model_label(product_key: str) -> str:
 
 
 class NarwalConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for a local or cloud-connected robot."""
+    """Handle the cloud account config flow."""
 
     VERSION = 1
 
@@ -106,67 +66,6 @@ class NarwalConfigFlow(ConfigFlow, domain=DOMAIN):
         self._cloud_devices: list[CloudDevice] = []
 
     async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Choose the connection transport."""
-        if user_input is not None:
-            if user_input[CONF_CONNECTION_TYPE] == CONNECTION_LOCAL:
-                return await self.async_step_local()
-            return await self.async_step_cloud()
-        return self.async_show_form(
-            step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
-        )
-
-    async def async_step_local(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Configure direct LAN WebSocket access."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            host = user_input["host"]
-            port = user_input.get("port", DEFAULT_PORT)
-            model_label = user_input[CONF_MODEL]
-            product_key = NARWAL_MODELS[model_label]
-            topic_prefix = None if product_key == "auto" else f"/{product_key}"
-            client = NarwalClient(host=host, port=port, topic_prefix=topic_prefix)
-            try:
-                await client.connect()
-                await client.discover_device_id(timeout=15.0)
-                await client.drain_ws_buffer()
-                device_info = await client.get_device_info()
-            except Exception as err:
-                _LOGGER.warning("Local Narwal setup failed: %s", type(err).__name__)
-                errors["base"] = "cannot_connect"
-            else:
-                await self.async_set_unique_id(device_info.device_id)
-                self._abort_if_unique_id_configured()
-                resolved_key = client.topic_prefix.lstrip("/")
-                resolved_model = (
-                    model_label
-                    if product_key != "auto"
-                    else _model_label(resolved_key)
-                )
-                return self.async_create_entry(
-                    title=resolved_model,
-                    data={
-                        CONF_CONNECTION_TYPE: CONNECTION_LOCAL,
-                        "host": host,
-                        "port": port,
-                        "device_id": device_info.device_id,
-                        CONF_PRODUCT_KEY: resolved_key,
-                        CONF_MODEL: resolved_model,
-                    },
-                )
-            finally:
-                await client.disconnect()
-        return self.async_show_form(
-            step_id="local",
-            data_schema=STEP_LOCAL_DATA_SCHEMA,
-            errors=errors,
-        )
-
-    async def async_step_cloud(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Authenticate and discover cloud-bound robots."""
@@ -205,8 +104,8 @@ class NarwalConfigFlow(ConfigFlow, domain=DOMAIN):
                         return await self._create_cloud_entry(devices[0])
                     return await self.async_step_cloud_device()
         return self.async_show_form(
-            step_id="cloud",
-            data_schema=STEP_CLOUD_DATA_SCHEMA,
+            step_id="user",
+            data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
         )
 
@@ -240,7 +139,6 @@ class NarwalConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(
             title=device.name or f"Narwal {device.product_id}",
             data={
-                CONF_CONNECTION_TYPE: CONNECTION_CLOUD,
                 CONF_PHONE: self._cloud_input[CONF_PHONE].strip(),
                 CONF_PASSWORD: self._cloud_input[CONF_PASSWORD],
                 CONF_AREA_CODE: self._cloud_input[CONF_AREA_CODE],
@@ -256,7 +154,7 @@ class NarwalConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
     ) -> ConfigFlowResult:
-        """Start reauthentication for an existing cloud entry."""
+        """Start cloud reauthentication for an existing entry."""
         self._cloud_input = dict(entry_data)
         return await self.async_step_reauth_confirm()
 
@@ -266,9 +164,11 @@ class NarwalConfigFlow(ConfigFlow, domain=DOMAIN):
         """Validate replacement cloud credentials and reload the entry."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            area_code = str(self._cloud_input[CONF_AREA_CODE]).strip()
+            area_code = str(
+                self._cloud_input.get(CONF_AREA_CODE, DEFAULT_AREA_CODE)
+            ).strip()
             country_code = str(
-                self._cloud_input[CONF_COUNTRY_CODE]
+                self._cloud_input.get(CONF_COUNTRY_CODE, DEFAULT_COUNTRY_CODE)
             ).strip().upper()
             updated = {
                 **self._cloud_input,
@@ -310,7 +210,7 @@ class NarwalConfigFlow(ConfigFlow, domain=DOMAIN):
                 {
                     vol.Required(
                         CONF_PHONE,
-                        default=self._cloud_input[CONF_PHONE],
+                        default=self._cloud_input.get(CONF_PHONE, ""),
                     ): str,
                     vol.Required(CONF_PASSWORD): str,
                 }

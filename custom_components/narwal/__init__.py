@@ -6,7 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
-from .const import PLATFORMS
+from .const import CONF_PASSWORD, CONF_PHONE, PLATFORMS
 from .coordinator import NarwalCoordinator
 from .narwal_client import NarwalAuthenticationError, NarwalConnectionError
 
@@ -15,6 +15,9 @@ type NarwalConfigEntry = ConfigEntry[NarwalCoordinator]
 
 async def async_setup_entry(hass: HomeAssistant, entry: NarwalConfigEntry) -> bool:
     """Set up Narwal from a config entry."""
+    if not entry.data.get(CONF_PHONE) or not entry.data.get(CONF_PASSWORD):
+        raise ConfigEntryAuthFailed("Narwal cloud credentials are required")
+
     coordinator = NarwalCoordinator(hass, entry)
     try:
         await coordinator.async_setup()

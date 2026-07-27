@@ -10,9 +10,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
-    CONF_CONNECTION_TYPE,
     CONF_MODEL,
-    CONNECTION_CLOUD,
     DOMAIN,
     MANUFACTURER,
 )
@@ -77,10 +75,7 @@ class NarwalEntity(CoordinatorEntity[NarwalCoordinator]):
     @property
     def available(self) -> bool:
         """Return True if the entity is available."""
-        if not self.coordinator.last_update_success:
-            return False
-        is_cloud = (
-            self.coordinator.config_entry.data.get(CONF_CONNECTION_TYPE)
-            == CONNECTION_CLOUD
+        return (
+            self.coordinator.last_update_success
+            and self.coordinator.client.robot_awake
         )
-        return not is_cloud or self.coordinator.client.robot_awake

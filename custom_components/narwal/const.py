@@ -5,10 +5,6 @@ from homeassistant.const import Platform
 from .narwal_client import FanLevel
 
 DOMAIN = "narwal"
-DEFAULT_PORT = 9002
-CONNECTION_LOCAL = "local"
-CONNECTION_CLOUD = "cloud"
-CONF_CONNECTION_TYPE = "connection_type"
 CONF_PHONE = "phone"
 CONF_PASSWORD = "password"
 CONF_AREA_CODE = "area_code"
@@ -18,9 +14,7 @@ DEFAULT_COUNTRY_CODE = "CN"
 
 MANUFACTURER = "Narwal"
 
-# Current product mapping used by cloud display and LAN selection.
-# Keys are user-facing labels; values are product key prefixes.
-# "auto" cycles all known keys during discovery (slower, fallback).
+# Product mapping used for cloud device display names.
 NARWAL_MODELS: dict[str, str] = {
     "Narwal J3": "cUlfJN5JYP",
     "Narwal J4": "EHf6cRNRGT",
@@ -30,11 +24,13 @@ NARWAL_MODELS: dict[str, str] = {
     "Narwal Flow 2": "QxMSPG6VSO",
     "Narwal Freo Z10 Ultra": "DrzDKQ0MU8",
     "Narwal Freo X10 Pro": "CNbforyZWI",
-    "Other / Auto-detect": "auto",
 }
 
 CONF_MODEL = "model"
 CONF_PRODUCT_KEY = "product_key"
+
+# GetFeatureList.Response.supportSingleDryMop
+FEATURE_SUPPORT_SINGLE_DRY_MOP = 38
 
 PLATFORMS: list[Platform] = [
     Platform.VACUUM,

@@ -7,7 +7,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import NarwalConfigEntry
-from .const import CONF_CONNECTION_TYPE, CONNECTION_CLOUD
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .narwal_client import NarwalNotification
@@ -18,10 +17,8 @@ async def async_setup_entry(
     entry: NarwalConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up notification synchronization for cloud devices."""
+    """Set up cloud notification synchronization."""
     del hass
-    if entry.data.get(CONF_CONNECTION_TYPE) != CONNECTION_CLOUD:
-        return
     async_add_entities([NarwalNotificationEvent(entry.runtime_data)])
 
 

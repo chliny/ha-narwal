@@ -555,7 +555,6 @@ class NarwalState:
 
     # Core status
     working_status: WorkingStatus = WorkingStatus.UNKNOWN
-    uses_task_type_schema: bool = False
     battery_level: int = 0  # real-time SOC from field 2 (float32)
     battery_health: int = 0  # static design capacity from field 38 (always 100)
     firmware_version: str = ""
@@ -564,7 +563,7 @@ class NarwalState:
     # Device identity
     device_info: DeviceInfo | None = None
 
-    # Cloud metadata (empty for local-only connections).
+    # Cloud account metadata.
     consumables: dict[str, ConsumableInfo] = field(default_factory=dict)
     notifications: list[NarwalNotification] = field(default_factory=list)
 
@@ -588,7 +587,7 @@ class NarwalState:
     download_status: int = 0
     upgrade_status_code: int = 0
 
-    # Legacy LAN pause overlay (field 3 sub-field 2).
+    # Pause overlay.
     is_paused: bool = False
 
     # RobotTaskStatus sub-state for the current task. The field number depends
@@ -634,12 +633,7 @@ class NarwalState:
     @property
     def has_cleaning_task(self) -> bool:
         """Return whether the active protocol state represents cleaning."""
-        if self.uses_task_type_schema:
-            return self.working_status.is_cleaning_task
-        return self.working_status in (
-            WorkingStatus.CLEANING,
-            WorkingStatus.CLEANING_ALT,
-        )
+        return self.working_status.is_cleaning_task
 
     @property
     def is_cleaning(self) -> bool:
@@ -652,46 +646,24 @@ class NarwalState:
 
     @property
     def is_docked(self) -> bool:
-        """True when on dock: DOCKED(10), CHARGED(14), DOCKED_V2(2), or dock field signals.
+        """Return whether the task state or dock signals indicate docking.
 
-        Dock signals (checked for STANDBY, UNKNOWN, and any unmapped status):
-          - dock_sub_state == 1 (field 3.10, old FW only)
-          - dock_activity > 0 (field 3.12, old FW only)
-          - dock_field11 >= 2 (field 11: old FW 2=docked/1=undocked,
-                               v01.07.23 3=docked)
-          - dock_field47 in (1, 3) (field 47: old FW 3=docked/2=undocked,
-                                    v01.07.23 1=docked)
-
-        Dock fields are checked for STANDBY/UNKNOWN and any status where
-        cleaning is not active, since the robot can report unmapped states
-        (e.g. self-test) while physically docked.
+        Field values vary by firmware, so task types take priority and the
+        remaining dock fields are used only for idle or unmapped states.
         """
-        if self.uses_task_type_schema:
-            if self.working_status.is_station_task:
+        if self.working_status.is_station_task:
+            return True
+        if (
+            self.working_status.is_cleaning_task
+            or self.working_status.is_returning_task
+        ):
+            return False
+        if self.working_status == WorkingStatus.IDLE:
+            if self.idle_status in (1, 6):
                 return True
-            if (
-                self.working_status.is_cleaning_task
-                or self.working_status.is_returning_task
-            ):
+            if self.idle_status in (2, 3, 4, 5, 7):
                 return False
-            if self.working_status == WorkingStatus.IDLE:
-                if self.idle_status in (1, 6):
-                    return True
-                if self.idle_status in (2, 3, 4, 5, 7):
-                    return False
-        else:
-            if self.working_status in (
-                WorkingStatus.DOCKED,
-                WorkingStatus.CHARGED,
-                WorkingStatus.DOCKED_V2,
-            ):
-                return True
-            if self.has_cleaning_task:
-                return False
-        # For STANDBY, UNKNOWN, or any other status: check dock field signals.
-        # Values differ across firmware versions:
-        #   Old FW: dock_sub_state=1, dock_field11=2, dock_field47=3
-        #   v01.07.23.00: dock_sub_state absent, dock_field11=3, dock_field47=1
+        # For idle, unknown, or unmapped states, check dock field signals.
         if self.dock_sub_state == 1:
             return True
         if self.dock_activity > 0:
@@ -709,10 +681,6 @@ class NarwalState:
         Dedicated RECALL/PARKING/RELOCALIZATION task types are authoritative.
         Cleaning task sub-status enums also expose recall and parking phases.
         """
-        if not self.uses_task_type_schema:
-            if not self.has_cleaning_task:
-                return False
-            return self.is_returning_to_dock and self.dock_sub_state == 2
         if self.working_status.is_returning_task:
             return True
         returning_sub_statuses = {
@@ -790,7 +758,7 @@ class NarwalState:
             if "1" in field3:
                 try:
                     raw_status = int(field3["1"])
-                    if self.uses_task_type_schema and not 0 <= raw_status <= 28:
+                    if not 0 <= raw_status <= 28:
                         raise ValueError
                     self.working_status = WorkingStatus(raw_status)
                 except (ValueError, TypeError):
@@ -801,44 +769,39 @@ class NarwalState:
                         raw_val,
                     )
                     self.working_status = WorkingStatus.UNKNOWN
-            if self.uses_task_type_schema:
-                # RobotTaskStatus uses one task-specific status field.
-                task_field = {
-                    WorkingStatus.IDLE: 2,
-                    WorkingStatus.SWEEP: 3,
-                    WorkingStatus.MOP: 4,
-                    WorkingStatus.SWEEP_AND_MOP: 5,
-                    WorkingStatus.SWEEP_THEN_MOP: 6,
-                    WorkingStatus.SMART_CLEAN: 7,
-                    WorkingStatus.BUILD_MAP: 8,
-                    WorkingStatus.RECALL: 9,
-                    WorkingStatus.WASH_AND_DRY_MOP: 11,
-                    WorkingStatus.UPDATE_MAP: 14,
-                    WorkingStatus.WAITING_COMMAND: 15,
-                    WorkingStatus.COMPOSITE_CLEAN: 16,
-                    WorkingStatus.DUST_GATHERING: 17,
-                    WorkingStatus.TELECONTROL: 18,
-                    WorkingStatus.MAINTAIN_FLOOR: 19,
-                    WorkingStatus.SEARCH_PERSON: 20,
-                    WorkingStatus.VIDEO_CRUISE: 21,
-                    WorkingStatus.SEARCH_PET: 22,
-                }.get(self.working_status)
-                try:
-                    self.task_sub_status = (
-                        int(field3.get(str(task_field), 0))
-                        if task_field is not None
-                        else 0
-                    )
-                except (ValueError, TypeError):
-                    self.task_sub_status = 0
-                if self.working_status == WorkingStatus.IDLE:
-                    self.idle_status = self.task_sub_status
-                # Pause is a RobotTaskStatusBaseV2 field, not old field 3.2.
-                self.is_paused = False
-                self.is_returning_to_dock = self.is_returning
-            else:
-                self.is_paused = bool(field3.get("2"))
-                self.is_returning_to_dock = field3.get("7") == 1
+            # RobotTaskStatus uses one task-specific status field.
+            task_field = {
+                WorkingStatus.IDLE: 2,
+                WorkingStatus.SWEEP: 3,
+                WorkingStatus.MOP: 4,
+                WorkingStatus.SWEEP_AND_MOP: 5,
+                WorkingStatus.SWEEP_THEN_MOP: 6,
+                WorkingStatus.SMART_CLEAN: 7,
+                WorkingStatus.BUILD_MAP: 8,
+                WorkingStatus.RECALL: 9,
+                WorkingStatus.WASH_AND_DRY_MOP: 11,
+                WorkingStatus.UPDATE_MAP: 14,
+                WorkingStatus.WAITING_COMMAND: 15,
+                WorkingStatus.COMPOSITE_CLEAN: 16,
+                WorkingStatus.DUST_GATHERING: 17,
+                WorkingStatus.TELECONTROL: 18,
+                WorkingStatus.MAINTAIN_FLOOR: 19,
+                WorkingStatus.SEARCH_PERSON: 20,
+                WorkingStatus.VIDEO_CRUISE: 21,
+                WorkingStatus.SEARCH_PET: 22,
+            }.get(self.working_status)
+            try:
+                self.task_sub_status = (
+                    int(field3.get(str(task_field), 0))
+                    if task_field is not None
+                    else 0
+                )
+            except (ValueError, TypeError):
+                self.task_sub_status = 0
+            if self.working_status == WorkingStatus.IDLE:
+                self.idle_status = self.task_sub_status
+            self.is_paused = False
+            self.is_returning_to_dock = self.is_returning
             if "10" in field3:
                 try:
                     self.dock_sub_state = int(field3["10"])

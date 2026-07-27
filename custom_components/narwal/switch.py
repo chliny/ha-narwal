@@ -8,7 +8,6 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import NarwalConfigEntry
-from .const import CONF_CONNECTION_TYPE, CONF_MODEL, CONNECTION_CLOUD
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .narwal_client import WorkingStatus
@@ -21,11 +20,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up Narwal station switches."""
     del hass
-    if (
-        entry.data[CONF_CONNECTION_TYPE] == CONNECTION_CLOUD
-        and entry.data[CONF_MODEL] == "Narwal J3"
-    ):
-        async_add_entities([NarwalWashAndDryMopSwitch(entry.runtime_data)])
+    async_add_entities([NarwalWashAndDryMopSwitch(entry.runtime_data)])
 
 
 class NarwalWashAndDryMopSwitch(NarwalEntity, SwitchEntity):
@@ -42,10 +37,7 @@ class NarwalWashAndDryMopSwitch(NarwalEntity, SwitchEntity):
     def is_on(self) -> bool:
         """Return whether the station is washing and drying mop pads."""
         state = self.coordinator.client.state
-        return (
-            state.uses_task_type_schema
-            and state.working_status == WorkingStatus.WASH_AND_DRY_MOP
-        )
+        return state.working_status == WorkingStatus.WASH_AND_DRY_MOP
 
     async def async_turn_on(self, **kwargs: object) -> None:
         """Start the station wash-and-dry cycle."""

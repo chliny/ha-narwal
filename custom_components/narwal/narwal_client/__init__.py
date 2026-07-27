@@ -1,4 +1,4 @@
-"""Narwal robot vacuum client library — local and cloud transports."""
+"""Narwal robot vacuum cloud client library."""
 
 from .client import (
     NarwalAuthenticationError,
@@ -25,7 +25,6 @@ from .models import (
     NarwalState,
     RoomInfo,
 )
-from .protocol import build_frame, parse_frame
 
 __all__ = [
     "NarwalClient",
@@ -50,6 +49,4 @@ __all__ = [
     "MopHumidity",
     "RoomInfo",
     "WorkingStatus",
-    "build_frame",
-    "parse_frame",
 ]

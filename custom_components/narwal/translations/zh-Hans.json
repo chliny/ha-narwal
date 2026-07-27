@@ -2,22 +2,6 @@
   "config": {
     "step": {
       "user": {
-        "title": "连接云鲸机器人",
-        "description": "J3/J4/J5 或远程访问请选择云端；支持 9002 端口的型号可选择局域网连接。",
-        "data": {
-          "connection_type": "连接方式"
-        }
-      },
-      "local": {
-        "title": "局域网 WebSocket",
-        "description": "机器人和 Home Assistant 必须位于同一网络。型号为下拉选择；不确定时请选择“Other / Auto-detect”自动识别。",
-        "data": {
-          "host": "IP 地址",
-          "port": "端口",
-          "model": "型号"
-        }
-      },
-      "cloud": {
         "title": "云鲸云端",
         "description": "输入云鲸 App 使用的手机号和密码。集成默认使用中国大陆（国际区号 86、国家代码 CN），也可输入以 +86 或 0086 开头的手机号。",
         "data": {
@@ -89,9 +73,6 @@
       }
     },
     "button": {
-      "wash_mop": {
-        "name": "清洗拖布"
-      },
       "dry_mop": {
         "name": "烘干拖布"
       },

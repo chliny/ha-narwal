@@ -2,22 +2,6 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect a Narwal robot",
-        "description": "Choose cloud for J3/J4/J5 and remote access, or local for robots that expose WebSocket port 9002.",
-        "data": {
-          "connection_type": "Connection method"
-        }
-      },
-      "local": {
-        "title": "Local WebSocket",
-        "description": "The robot and Home Assistant must be on the same network. Model is a dropdown; choose Other / Auto-detect if unsure.",
-        "data": {
-          "host": "IP address",
-          "port": "Port",
-          "model": "Model"
-        }
-      },
-      "cloud": {
         "title": "Narwal cloud",
         "description": "Enter the mobile number and password used by the Narwal app. Mainland China (calling code 86, country CN) is used automatically. A leading +86 or 0086 is accepted.",
         "data": {
@@ -89,9 +73,6 @@
       }
     },
     "button": {
-      "wash_mop": {
-        "name": "Wash mop pads"
-      },
       "dry_mop": {
         "name": "Dry mop pads"
       },

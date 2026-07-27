@@ -27,7 +27,6 @@ from .cloud_api import (
 )
 from .const import COMMAND_RESPONSE_TIMEOUT, TOPIC_CMD_ACTIVE_ROBOT
 from .models import CommandResponse
-from .protocol import build_frame
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -183,11 +182,9 @@ class NarwalCloudClient(NarwalClient):
         country_code: str = "CN",
     ) -> None:
         super().__init__(
-            host="cloud",
             device_id=device_id,
-            topic_prefix=f"/{product_id}",
+            product_id=product_id,
         )
-        self.state.uses_task_type_schema = True
         self._api = NarwalCloudApi(
             session,
             phone=phone,
@@ -473,11 +470,7 @@ class NarwalCloudClient(NarwalClient):
         short_topic = topic.removeprefix(prefix)
         if short_topic == "general/topic" and inner_url:
             short_topic = inner_url.lstrip("/")
-        frame = build_frame(
-            f"{self.topic_prefix}/{self.device_id}/{short_topic}",
-            payload,
-        )
-        await self._handle_message(frame)
+        await self._handle_broadcast(short_topic, payload)
 
     @classmethod
     def _build_cloud_active_payload(cls) -> bytes:
@@ -636,10 +629,6 @@ class NarwalCloudClient(NarwalClient):
                 self._activation_loop(),
                 name="narwal-cloud-active-publish",
             )
-
-    async def _send_wake_burst(self) -> None:
-        """Cloud wake is the app's active-publish registration."""
-        await self.subscribe_to_topics()
 
     async def start_listening(self) -> None:
         """Keep the MQTT transport active and reconnect when needed."""

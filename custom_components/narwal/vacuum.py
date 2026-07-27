@@ -89,8 +89,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         if state is None:
             return VacuumActivity.IDLE
         is_cleaning_state = state.has_cleaning_task
-        # Legacy LAN pause state can stay stale after docking, so only trust it
-        # while a cleaning task is active. Pause takes priority over returning.
+        # Only trust pause while a cleaning task is active.
         if state.is_paused and is_cleaning_state:
             return VacuumActivity.PAUSED
         # Check returning before cleaning because cleaning task sub-states can
@@ -125,27 +124,12 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         """
         return self._last_fan_speed
 
-    # Timeout for action commands (start/stop/return) — robot may need
-    # time to load map, plan route, etc., especially after waking.
+    # Robot actions may need time to load a map and plan a route.
     _ACTION_TIMEOUT = 10.0
-
-    async def _ensure_awake(self) -> None:
-        """Wake the robot if it is not broadcasting.
-
-        Sends a wake burst and waits for broadcasts. If the robot doesn't
-        respond, the command is still attempted — it may work even without
-        a wake confirmation (e.g., shallow sleep).
-        """
-        client = self.coordinator.client
-        if not client.robot_awake:
-            _LOGGER.debug("Robot not awake — sending wake burst")
-            await client.wake(timeout=10.0)
 
     async def async_start(self) -> None:
         """Start or resume cleaning."""
-        await self._ensure_awake()
         state = self.coordinator.data
-        # is_paused stays stale after docking — only trust it during cleaning
         is_cleaning = state and state.has_cleaning_task
         if is_cleaning and state.is_paused:
             response = await self._async_await_command(
@@ -163,7 +147,6 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
 
     async def async_stop(self, **kwargs) -> None:
         """Stop cleaning."""
-        await self._ensure_awake()
         response = await self._async_await_command(
             self.coordinator.client.stop(),
             "stop",
@@ -182,7 +165,6 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
 
     async def async_return_to_base(self, **kwargs) -> None:
         """Return to the dock."""
-        await self._ensure_awake()
         response = await self._async_await_command(
             self.coordinator.client.return_to_base(
                 timeout=self._ACTION_TIMEOUT
@@ -194,7 +176,6 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
 
     async def async_locate(self, **kwargs) -> None:
         """Locate the vacuum — robot says 'Robot is here'."""
-        await self._ensure_awake()
         response = await self._async_await_command(
             self.coordinator.client.locate(),
             "locate",
@@ -253,7 +234,6 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         Converts string segment IDs back to integer room IDs and sends
         a room-specific clean command to the robot.
         """
-        await self._ensure_awake()
         room_ids = [int(sid) for sid in segment_ids]
         _LOGGER.info("Starting room-specific clean: rooms=%s", room_ids)
         response = await self._async_await_command(

@@ -11,7 +11,6 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import NarwalConfigEntry
-from .const import CONF_CONNECTION_TYPE, CONF_MODEL, CONNECTION_CLOUD
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .narwal_client import CommandResponse, NarwalClient
@@ -26,12 +25,6 @@ class NarwalButtonEntityDescription(ButtonEntityDescription):
 
 BUTTON_DESCRIPTIONS = (
     NarwalButtonEntityDescription(
-        key="wash_mop",
-        translation_key="wash_mop",
-        icon="mdi:washing-machine",
-        action=lambda client: client.wash_mop(),
-    ),
-    NarwalButtonEntityDescription(
         key="dry_mop",
         translation_key="dry_mop",
         icon="mdi:weather-windy",
@@ -45,6 +38,7 @@ BUTTON_DESCRIPTIONS = (
     ),
 )
 
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
@@ -52,20 +46,12 @@ async def async_setup_entry(
 ) -> None:
     """Set up Narwal base-station buttons."""
     del hass
-    is_j3_cloud = (
-        entry.data[CONF_CONNECTION_TYPE] == CONNECTION_CLOUD
-        and entry.data[CONF_MODEL] == "Narwal J3"
-    )
-    descriptions = (
-        (BUTTON_DESCRIPTIONS[-1],)
-        if is_j3_cloud
-        else BUTTON_DESCRIPTIONS
-    )
+    coordinator = entry.runtime_data
+    descriptions = [BUTTON_DESCRIPTIONS[-1]]
+    if coordinator.supports_single_dry_mop:
+        descriptions.insert(0, BUTTON_DESCRIPTIONS[0])
     async_add_entities(
-        [
-            NarwalActionButton(entry.runtime_data, description)
-            for description in descriptions
-        ]
+        [NarwalActionButton(coordinator, description) for description in descriptions]
     )
 
 

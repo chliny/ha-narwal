@@ -15,18 +15,16 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     CONF_AREA_CODE,
-    CONF_CONNECTION_TYPE,
     CONF_COUNTRY_CODE,
     CONF_PASSWORD,
     CONF_PHONE,
     CONF_PRODUCT_KEY,
-    CONNECTION_CLOUD,
     DOMAIN,
+    FEATURE_SUPPORT_SINGLE_DRY_MOP,
 )
 from .narwal_client import (
     DeviceInfo,
     NarwalAuthenticationError,
-    NarwalClient,
     NarwalCloudClient,
     NarwalConnectionError,
     NarwalState,
@@ -43,15 +41,7 @@ FAST_POLL_MAX = 6  # up to 60s of fast polling before falling back to normal
 
 
 class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
-    """Push-mode coordinator for Narwal vacuum.
-
-    Primary data source is WebSocket broadcasts (every ~1.5s when awake).
-    Fallback polling every 60s via get_status() in case broadcasts stop.
-
-    Setup is kept fast: connect, try a few commands (which may time out if
-    the robot is asleep), then start the listener. The listener's keepalive
-    loop handles waking the robot — no blocking wake call during setup.
-    """
+    """Cloud push coordinator with polling fallback."""
 
     config_entry: ConfigEntry
 
@@ -64,23 +54,15 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             update_interval=POLL_INTERVAL,
         )
         product_key = entry.data[CONF_PRODUCT_KEY]
-        if entry.data[CONF_CONNECTION_TYPE] == CONNECTION_CLOUD:
-            self.client = NarwalCloudClient(
-                async_get_clientsession(hass),
-                phone=entry.data[CONF_PHONE],
-                password=entry.data[CONF_PASSWORD],
-                area_code=entry.data[CONF_AREA_CODE],
-                country_code=entry.data[CONF_COUNTRY_CODE],
-                device_id=entry.data["device_id"],
-                product_id=product_key,
-            )
-        else:
-            self.client = NarwalClient(
-                host=entry.data["host"],
-                port=entry.data["port"],
-                device_id=entry.data["device_id"],
-                topic_prefix=f"/{product_key}",
-            )
+        self.client = NarwalCloudClient(
+            async_get_clientsession(hass),
+            phone=entry.data[CONF_PHONE],
+            password=entry.data[CONF_PASSWORD],
+            area_code=entry.data[CONF_AREA_CODE],
+            country_code=entry.data[CONF_COUNTRY_CODE],
+            device_id=entry.data["device_id"],
+            product_id=product_key,
+        )
         self._listen_task: asyncio.Task[None] | None = None
         self._fast_poll_remaining = 0
         self._prev_working_status = WorkingStatus.UNKNOWN
@@ -88,18 +70,18 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._last_display_map_resub: float = 0.0
         self._consecutive_failures = 0
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
+        self.feature_flags: dict[int, int] = {}
+
+    @property
+    def supports_single_dry_mop(self) -> bool:
+        """Return whether the station supports drying the mop independently."""
+        return self.feature_flags.get(FEATURE_SUPPORT_SINGLE_DRY_MOP) == 1
 
     async def async_setup(self) -> None:
-        """Connect to the vacuum and start the WebSocket listener.
-
-        Queries initial state BEFORE starting the listener to avoid
-        concurrent recv issues (see 446be16). Each command is wrapped in
-        try/except so setup never crashes if the robot is asleep.
-        The listener's keepalive loop handles waking independently.
-        """
+        """Connect to the cloud and start the MQTT listener."""
         await self.client.connect()
 
-        if isinstance(self.client, NarwalCloudClient) and self.client.cloud_device:
+        if self.client.cloud_device:
             cloud_device = self.client.cloud_device
             self.client.state.device_info = DeviceInfo(
                 product_key=cloud_device.product_id,
@@ -118,6 +100,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             await self.client.get_status(full_update=True)
         except Exception:
             _LOGGER.debug("Could not fetch initial status")
+
+        try:
+            self.feature_flags = await self.client.get_feature_list()
+        except Exception:
+            _LOGGER.debug("Could not fetch device feature flags at startup")
 
         try:
             await self.client.get_map()
@@ -140,14 +127,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._listen_task = self.config_entry.async_create_background_task(
             self.hass,
             self._async_listen(),
-            f"{DOMAIN}_ws_listener",
+            f"{DOMAIN}_mqtt_listener",
         )
 
         state = self.client.state
         _LOGGER.info(
             "Narwal startup: status=%s, battery=%d, docked=%s, awake=%s",
-            state.working_status.name, state.battery_level,
-            state.is_docked, self.client.robot_awake,
+            state.working_status.name,
+            state.battery_level,
+            state.is_docked,
+            self.client.robot_awake,
         )
 
         # If robot didn't respond, use fast polling to catch it when it wakes
@@ -160,9 +149,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             )
 
     async def _async_refresh_cloud_metadata(self) -> None:
-        """Refresh optional cloud-only data without affecting robot control."""
-        if not isinstance(self.client, NarwalCloudClient):
-            return
+        """Refresh optional account data without affecting robot control."""
         try:
             await self.client.get_cloud_metadata()
         except NarwalAuthenticationError:
@@ -183,7 +170,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             self.config_entry.async_start_reauth(self.hass)
 
     def _on_state_update(self, state: NarwalState) -> None:
-        """Handle a push state update from the WebSocket listener."""
+        """Handle a push state update from MQTT."""
         # Push data arriving means robot is reachable — reset failure counter
         self._consecutive_failures = 0
 
@@ -196,44 +183,23 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 f"{DOMAIN}_map_fetch",
             )
 
-        # Detect a cleaning-task → idle/station-task transition.
-        # Broadcast dock fields are stale after docking — immediate poll
-        # refreshes them so UI shows DOCKED instead of IDLE.
-        # On older FW the transition is → STANDBY; on v01.07.23+ it may
-        # go directly to DOCKED_V2(2).
-        if state.uses_task_type_schema:
-            now_idle_or_station = (
-                state.working_status == WorkingStatus.IDLE
-                or state.working_status.is_station_task
-            )
-            was_cleaning = self._prev_working_status.is_cleaning_task
-        else:
-            now_idle_or_station = state.working_status in (
-                WorkingStatus.STANDBY,
-                WorkingStatus.DOCKED_V2,
-                WorkingStatus.DOCKED,
-                WorkingStatus.CHARGED,
-            )
-            was_cleaning = self._prev_working_status in (
-                WorkingStatus.CLEANING,
-                WorkingStatus.CLEANING_ALT,
-            )
+        # Poll immediately after a cleaning task becomes idle or a station
+        # task so dock fields do not remain stale.
+        now_idle_or_station = (
+            state.working_status == WorkingStatus.IDLE or state.working_status.is_station_task
+        )
+        was_cleaning = self._prev_working_status.is_cleaning_task
         if now_idle_or_station and was_cleaning:
             _LOGGER.info("Return-to-dock detected, refreshing dock status")
             self.hass.async_create_task(self._refresh_dock_status())
         self._prev_working_status = state.working_status
 
-        # display_map dropout recovery: if cleaning but no display_map for
-        # 30s, re-send topic subscription. Only subscription — no wake burst
-        # (wake bursts during cleaning cause pause bouncing).
+        # Renew cloud status publication if live map updates stop mid-clean.
         is_cleaning = state.has_cleaning_task
         if is_cleaning:
             display_age = self.client.last_display_map_age
             now = time.monotonic()
-            if (
-                display_age > 30.0
-                and now - self._last_display_map_resub > 45.0
-            ):
+            if display_age > 30.0 and now - self._last_display_map_resub > 45.0:
                 _LOGGER.info(
                     "display_map dropout (%.0fs) — re-subscribing to topics",
                     display_age,
@@ -287,15 +253,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             _LOGGER.debug("Failed to refresh dock status after transition")
 
     async def _async_update_data(self) -> NarwalState:
-        """Polling fallback — fetch status if no push updates arrived.
-
-        Reconnection is handled by the listener loop's exponential backoff.
-        We do NOT call client.connect() here to avoid racing with the listener
-        and violating the single-WS-connection-per-IP constraint.
-
-        On poll failure, returns stale data for up to _max_failures consecutive
-        failures (~5 minutes) before raising UpdateFailed.
-        """
+        """Poll status when push updates are unavailable."""
         try:
             if not self.client.connected:
                 raise NarwalConnectionError("Not connected")
@@ -309,7 +267,9 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 ) from err
             _LOGGER.debug(
                 "Poll %d/%d failed (robot may be asleep): %s",
-                self._consecutive_failures, self._max_failures, err,
+                self._consecutive_failures,
+                self._max_failures,
+                err,
             )
             return self.client.state  # stale data keeps entities available
         else:

@@ -2,22 +2,6 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connecter un robot Narwal",
-        "description": "Choisissez le cloud pour les J3/J4/J5 et l’accès à distance, ou le réseau local pour les robots qui exposent le port WebSocket 9002.",
-        "data": {
-          "connection_type": "Mode de connexion"
-        }
-      },
-      "local": {
-        "title": "WebSocket local",
-        "description": "Le robot et Home Assistant doivent être sur le même réseau. Choisissez le modèle dans la liste ou Other / Auto-detect en cas de doute.",
-        "data": {
-          "host": "Adresse IP",
-          "port": "Port",
-          "model": "Modèle"
-        }
-      },
-      "cloud": {
         "title": "Cloud Narwal",
         "description": "Saisissez le numéro de mobile et le mot de passe utilisés dans l’application Narwal. La Chine continentale (indicatif 86, pays CN) est sélectionnée automatiquement. Les préfixes +86 et 0086 sont acceptés.",
         "data": {
@@ -89,9 +73,6 @@
       }
     },
     "button": {
-      "wash_mop": {
-        "name": "Laver les serpillières"
-      },
       "dry_mop": {
         "name": "Sécher les serpillières"
       },

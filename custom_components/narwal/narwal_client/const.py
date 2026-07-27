@@ -2,69 +2,9 @@
 
 from enum import IntEnum
 
-# Connection defaults
-DEFAULT_PORT = 9002
-
-# Frame structure
-FRAME_TYPE_BYTE = 0x01
-PROTOBUF_FIELD_TAG = 0x22  # field 4, wire type 2 (broadcasts/requests)
-TOPIC_LENGTH_OFFSET = 3
-TOPIC_DATA_OFFSET = 4
-
-# Default topic prefix — Narwal Flow (AX12) product key.
-# Overridden at runtime by NarwalClient once get_device_info returns
-# the actual product_key for the connected device.
-DEFAULT_TOPIC_PREFIX = "/QoEsI5qYXO"
-
-# Known product keys for multi-model discovery.
-# During wake/discovery, the client cycles through these prefixes until
-# the robot responds. Once it does, the correct prefix is locked in.
-# Order: confirmed working models first, then unverified keys.
-KNOWN_PRODUCT_KEYS = [
-    # Confirmed working (local WebSocket)
-    "QoEsI5qYXO",  # AX12 — Narwal Flow (primary, confirmed)
-    "QxMSPG6VSO",  # Narwal Flow 2 (confirmed working via local WebSocket)
-    "DrzDKQ0MU8",   # CX4  — Freo Z10 Ultra (confirmed by @irekkl-maker)
-    # Confirmed cloud-only (port 9002 open but no local broadcasts)
-    "BYWBPqSxeC",   # CX7  — Freo Z Ultra (cloud-only, confirmed by @gabrielozcomidi)
-    # Confirmed cloud-only (ZeroMQ port 6789, no WebSocket)
-    "LnugwMG9ss",   # AX18 — Freo X Ultra (cloud-only, confirmed by @ManivannanBA)
-    "5OMbqk58Sc",   # AX19 — Freo X Ultra
-    # From APK analysis (unverified — model compatibility unknown)
-    "tPQJmoIbEC",   # AX6  (APK, contributed by @northwestsupra)
-    "HgArZ7KuJL",   # AX7  (APK, contributed by @northwestsupra)
-    "Uuug39n0fD",   # AX8  (APK, contributed by @northwestsupra)
-    "CNbforyZWI",   # AX15 — Freo X10 Pro (confirmed by @jlowen07)
-    "E9Q8aDzUbp",   # AX17
-    "jI5rHi4mKa",   # AX24
-    "UuTSLsMce4",   # AX25
-    "qV6BujoYLz",   # AX26
-    "88OLXLpkjT",   # BX4  (note: APK also has 3rIGshGNAj — may vary by FW revision)
-    "3rIGshGNAj",   # BX4/Y1 alternate key (APK, contributed by @northwestsupra)
-    "7sSZZ4XfTI",   # CX2
-    "OlkUn3oUCu",   # CX3 / CX3Pure
-    "mvlduyye85",   # X30
-    "pcbfh2ldvx",   # X31
-    "EHf6cRNRGT",   # J4 / J4Pure (APK, contributed by @northwestsupra)
-    "6NjIDYxBXb",   # J4Lite (APK, contributed by @northwestsupra)
-    "hEA7OEshlx",   # J5  (APK, contributed by @northwestsupra)
-    "cUlfJN5JYP",   # Unknown model (APK, contributed by @northwestsupra)
-]
-
-# --- Status topics (robot → client, field 4 / 0x22 frames) ---
-TOPIC_WORKING_STATUS = "status/working_status"
-TOPIC_ROBOT_BASE_STATUS = "status/robot_base_status"
-TOPIC_UPGRADE_STATUS = "upgrade/upgrade_status"
-TOPIC_DOWNLOAD_STATUS = "status/download_status"
-TOPIC_DISPLAY_MAP = "map/display_map"
-TOPIC_TIMELINE_STATUS = "status/time_line_status"
-TOPIC_PLANNING_DEBUG = "developer/planning_debug_info"
-
-# --- Command topics (client → robot, confirmed working) ---
+# --- Cloud command topics ---
 # Common
 TOPIC_CMD_YELL = "common/yell"
-TOPIC_CMD_REBOOT = "common/reboot"
-TOPIC_CMD_SHUTDOWN = "common/shutdown"
 TOPIC_CMD_GET_DEVICE_INFO = "common/get_device_info"
 TOPIC_CMD_GET_FEATURE_LIST = "common/get_feature_list"
 TOPIC_CMD_GET_BASE_STATUS = "status/get_device_base_status"
@@ -84,7 +24,6 @@ TOPIC_CMD_DUST_GATHERING = "supply/dust_gathering"
 
 # Cleaning (Pita protocol — correct for AX12)
 TOPIC_CMD_START_CLEAN = "clean/plan/start"  # whole-house clean (empty payload)
-TOPIC_CMD_START_CLEAN_LEGACY = "clean/start_clean"  # does NOT work from STANDBY
 TOPIC_CMD_EASY_CLEAN = "clean/easy_clean/start"
 TOPIC_CMD_SET_FAN_LEVEL = "clean/set_fan_level"
 TOPIC_CMD_SET_MOP_HUMIDITY = "clean/set_mop_humidity"
@@ -98,42 +37,10 @@ TOPIC_CMD_GET_ALL_MAPS = "map/get_all_reduced_maps"
 TOPIC_CMD_TAKE_PICTURE = "developer/take_picture"
 TOPIC_CMD_SET_LED = "developer/led_control"
 
-# Wake / Keep-alive (from APK analysis — candidates for waking sleeping robot)
-TOPIC_CMD_ACTIVE_ROBOT = "common/active_robot_publish"  # TopicDuration keepalive
-TOPIC_CMD_APP_HEARTBEAT = "status/app_status_heartbeat"  # periodic app heartbeat
-TOPIC_CMD_NOTIFY_APP_EVENT = "common/notify_app_event"  # "app opened" event
-TOPIC_CMD_PING = "developer/ping"  # dev ping/pong
-
-# Reconnection parameters
-RECONNECT_INITIAL_DELAY = 1.0  # seconds
-RECONNECT_MAX_DELAY = 300.0  # 5 minutes
-RECONNECT_BACKOFF_FACTOR = 2.0
-RECONNECT_COOLDOWN = 10.0  # wait after robot disconnects on invalid message
-
-# Heartbeat
-HEARTBEAT_INTERVAL = 30.0  # seconds
-
-# Keep-alive interval — sends wake commands to prevent robot from sleeping
-KEEPALIVE_INTERVAL = 15.0  # seconds
-
-# How long without a broadcast before we consider the robot asleep again.
-# Robot broadcasts every 1.5s when awake — 15s without one means it's asleep.
-BROADCAST_STALE_TIMEOUT = 15.0  # seconds (~10x the 1.5s broadcast interval)
-
-# Wake sequence timeout — how long to wait for robot to respond after wake burst
-WAKE_TIMEOUT = 20.0  # seconds
+TOPIC_CMD_ACTIVE_ROBOT = "common/active_robot_publish"
 
 # Command response timeout
 COMMAND_RESPONSE_TIMEOUT = 5.0  # seconds
-
-# display_map dropout detection — if robot is cleaning but no display_map
-# arrives for this long, escalate to a full wake burst to recover the
-# topic subscription (which can die during CLEANING_ALT / stuck episodes)
-DISPLAY_MAP_DROPOUT_TIMEOUT = 30.0  # seconds
-DISPLAY_MAP_RECOVERY_COOLDOWN = 45.0  # retry recovery every 45s if dropout persists
-
-# Status broadcast interval
-STATUS_BROADCAST_INTERVAL = 1.5  # seconds (when robot is awake)
 
 
 class CommandResult(IntEnum):
@@ -212,16 +119,6 @@ class WorkingStatus(IntEnum):
 
     # Keep UNKNOWN as the public fallback spelling used throughout the client.
     UNKNOWN = UNSPECIFIED
-
-    # Legacy LAN firmware uses the same wire numbers with older state
-    # semantics. NarwalState only interprets these aliases for local transport.
-    STANDBY = IDLE
-    DOCKED_V2 = SWEEP
-    CLEANING = SWEEP_THEN_MOP
-    CLEANING_ALT = SWEEP_AND_MOP
-    DOCKED = RECALL
-    CHARGED = WASH_AND_DRY_MOP
-    TASK_COMPLETED = DUST_GATHERING
     ERROR = 99
 
 
