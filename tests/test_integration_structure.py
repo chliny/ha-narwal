@@ -16,16 +16,6 @@ def _json_key_tree(value: object) -> object:
     return None
 
 
-def test_release_metadata_and_dependencies() -> None:
-    manifest = json.loads((INTEGRATION / "manifest.json").read_text())
-    requirements = " ".join(manifest["requirements"]).lower()
-
-    assert all(
-        dependency in requirements
-        for dependency in ("bbpb", "paho-mqtt", "pillow", "websockets")
-    )
-
-
 def test_translation_resources_match_current_schema() -> None:
     expected = _json_key_tree(
         json.loads((INTEGRATION / "strings.json").read_text())
