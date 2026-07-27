@@ -903,8 +903,10 @@ class NarwalClient:
     #   field 5.1.2 = mop humidity (2=wet)
     #   field 5.1.3 = passes (1=single)
     # On firmware v01.07.22+ (Flow), this returns NOT_APPLICABLE and
-    # start() falls back to the v2 room-list schema. See issue #36.
+    # start() falls back to the v2 whole-map schema. See issue #36.
     _DEFAULT_CLEAN_PAYLOAD = bytes.fromhex("0a0e12002a0a0a060803100218012a00")
+    _ZONE_TYPE_ROOM = 1
+    _ZONE_TYPE_WHOLE_MAP = 3
 
     async def start(self, **kwargs) -> CommandResponse:
         """Start whole-house cleaning.
@@ -912,11 +914,9 @@ class NarwalClient:
         Tries the legacy minimal payload first (works on Flow firmware
         < v01.07.22). If the robot returns NOT_APPLICABLE — observed on
         firmware v01.07.22.00 in issue #36 — falls back to the v2 schema
-        that includes an explicit room list, mirroring what the Narwal
-        app sends on newer firmware.
-
-        The v2 fallback requires the map to be loaded (get_map called)
-        so we know which rooms to include.
+        with a single ZONE_TYPE_WHOLE_MAP item. The fallback deliberately
+        carries no room IDs, so the default command remains unrestricted
+        and does not depend on cached map data.
         """
         resp = await self.send_command(
             TOPIC_CMD_START_CLEAN,
@@ -926,34 +926,18 @@ class NarwalClient:
         if resp.result_code != CommandResult.NOT_APPLICABLE:
             return resp
 
-        # Legacy payload rejected — likely newer firmware. Need the room
-        # list from the cached map to build a v2 payload.
-        if not (self.state.map_data and self.state.map_data.rooms):
-            _LOGGER.warning(
-                "start() got NOT_APPLICABLE and no map rooms cached; "
-                "cannot build v2 payload. Call get_map() first."
-            )
-            return resp
-
-        room_ids = [r.room_id for r in self.state.map_data.rooms if r.room_id]
-        if not room_ids:
-            _LOGGER.warning(
-                "start() got NOT_APPLICABLE but cached map has 0 rooms with IDs"
-            )
-            return resp
-
         _LOGGER.info(
-            "start(): legacy payload rejected, retrying with v2 schema (%d rooms)",
-            len(room_ids),
+            "start(): legacy payload rejected, retrying with unrestricted "
+            "v2 whole-map schema",
         )
-        payload = self._build_clean_payload_v2(room_ids)
+        payload = self._build_clean_payload_v2()
         return await self.send_command(
             TOPIC_CMD_START_CLEAN, payload=payload, timeout=10.0,
         )
 
     def _build_clean_payload_v2(
         self,
-        room_ids: list[int],
+        room_ids: list[int] | None = None,
         suction: int = 3,
         mop_humidity: int = 2,
         passes: int = 1,
@@ -962,9 +946,12 @@ class NarwalClient:
         """Build clean task payload using the v2 schema (firmware v01.07.22+).
 
         Observed in issue #36 from a Flow on firmware v01.07.22.00.
-        Each room entry uses a nested room_id (different from the flat
-        schema in _build_room_clean_payload used for room-targeted cleans
-        on older firmware):
+        With no room IDs, this creates one ZONE_TYPE_WHOLE_MAP item and
+        omits zone_id, representing unrestricted whole-map cleaning.
+
+        Room-specific entries use ZONE_TYPE_ROOM with a nested room ID
+        (different from the flat schema in _build_room_clean_payload used
+        for room-targeted cleans on older firmware):
 
             {
               1: {1: 1, 2: <room_id>},                # nested room ref
@@ -980,7 +967,8 @@ class NarwalClient:
         sweep+mop (3 in v2 schema), single pass, wet mop.
 
         Args:
-            room_ids: List of room IDs from RoomInfo.room_id.
+            room_ids: Optional room IDs from RoomInfo.room_id. None or an
+                empty list means unrestricted whole-map cleaning.
             suction: 1-3 (Flow 1) / 1-4 (Flow 2). Default 3 = max for Flow 1.
             mop_humidity: 1=dry, 2=wet, 3=very wet. Default 2.
             passes: Number of passes. Default 1.
@@ -991,21 +979,31 @@ class NarwalClient:
         """
         import blackboxprotobuf
 
-        room_entries = [
-            {
-                "1": {"1": 1, "2": rid},
-                "2": {
-                    "1": suction,
-                    "2": clean_mode,
-                    "3": passes,
-                    "7": mop_humidity,
-                },
-                "3": idx + 1,
-            }
-            for idx, rid in enumerate(room_ids)
-        ]
+        clean_params = {
+            "1": suction,
+            "2": clean_mode,
+            "3": passes,
+            "7": mop_humidity,
+        }
+        if room_ids:
+            clean_items = [
+                {
+                    "1": {"1": self._ZONE_TYPE_ROOM, "2": rid},
+                    "2": clean_params,
+                    "3": idx + 1,
+                }
+                for idx, rid in enumerate(room_ids)
+            ]
+        else:
+            clean_items = [
+                {
+                    "1": {"1": self._ZONE_TYPE_WHOLE_MAP},
+                    "2": clean_params,
+                    "3": 1,
+                }
+            ]
 
-        room_entry_typedef = {
+        clean_item_typedef = {
             "type": "message",
             "seen_repeated": True,
             "message_typedef": {
@@ -1032,7 +1030,7 @@ class NarwalClient:
         msg = {
             "1": {
                 "1": 1,
-                "2": room_entries if len(room_entries) > 1 else room_entries[0],
+                "2": clean_items if len(clean_items) > 1 else clean_items[0],
                 "3": {},
                 "5": 6,
             }
@@ -1042,7 +1040,7 @@ class NarwalClient:
                 "type": "message",
                 "message_typedef": {
                     "1": {"type": "int"},
-                    "2": room_entry_typedef,
+                    "2": clean_item_typedef,
                     "3": {"type": "message", "message_typedef": {}},
                     "5": {"type": "int"},
                 },
