@@ -31,6 +31,7 @@ CONF_PRODUCT_KEY = "product_key"
 
 # GetFeatureList.Response.supportSingleDryMop
 FEATURE_SUPPORT_SINGLE_DRY_MOP = 38
+FEATURE_SUPPORT_QUIET_DUST_GATHERING = 21
 
 PLATFORMS: list[Platform] = [
     Platform.VACUUM,

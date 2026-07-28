@@ -8,6 +8,8 @@ TOPIC_CMD_YELL = "common/yell"
 TOPIC_CMD_GET_DEVICE_INFO = "common/get_device_info"
 TOPIC_CMD_GET_FEATURE_LIST = "common/get_feature_list"
 TOPIC_CMD_GET_BASE_STATUS = "status/get_device_base_status"
+TOPIC_CMD_GET_CONFIG = "config/get"
+TOPIC_CMD_SET_CONFIG = "config/set"
 
 # Task control
 TOPIC_CMD_PAUSE = "task/pause"
@@ -137,6 +139,22 @@ class MopHumidity(IntEnum):
     DRY = 0
     NORMAL = 1
     WET = 2
+
+
+class DryMopStrength(IntEnum):
+    """Mop drying levels from the Android app protobuf."""
+
+    QUIET = 1
+    STRONG = 2
+    SMART = 3
+
+
+class CustomCleanStrategy(IntEnum):
+    """Custom cleaning strategies from the Android app protobuf."""
+
+    AREA = 1
+    ROOM = 2
+    SMART = 3
 
 
 # robot_base_status field numbers

@@ -566,6 +566,8 @@ class NarwalState:
     # Cloud account metadata.
     consumables: dict[str, ConsumableInfo] = field(default_factory=dict)
     notifications: list[NarwalNotification] = field(default_factory=list)
+    latest_task_record: dict[str, Any] | None = None
+    task_records_supported: bool = False
 
     # Session
     session_id: str = ""

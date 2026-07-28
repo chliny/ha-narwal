@@ -20,6 +20,7 @@ from .const import (
     CONF_PHONE,
     CONF_PRODUCT_KEY,
     DOMAIN,
+    FEATURE_SUPPORT_QUIET_DUST_GATHERING,
     FEATURE_SUPPORT_SINGLE_DRY_MOP,
 )
 from .narwal_client import (
@@ -71,11 +72,42 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._consecutive_failures = 0
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
         self.feature_flags: dict[int, int] = {}
+        self.device_config: dict[str, object] = {}
+        self._feature_discovery_complete = False
+        self._config_discovery_complete = False
 
     @property
     def supports_single_dry_mop(self) -> bool:
         """Return whether the station supports drying the mop independently."""
         return self.feature_flags.get(FEATURE_SUPPORT_SINGLE_DRY_MOP) == 1
+
+    @property
+    def supports_fan_speed(self) -> bool:
+        """Return whether base status declares a suction setting."""
+        return "26" in self.client.state.raw_base_status
+
+    @property
+    def supports_mop_humidity(self) -> bool:
+        """Return whether base status declares a mop humidity setting."""
+        return "29" in self.client.state.raw_base_status
+
+    @property
+    def supports_dust_gathering(self) -> bool:
+        """Return whether station dust gathering is configurable."""
+        return (
+            "27" in self.device_config
+            or self.feature_flags.get(FEATURE_SUPPORT_QUIET_DUST_GATHERING) == 1
+        )
+
+    @property
+    def supports_dry_mop_strength(self) -> bool:
+        """Return whether the station exposes mop drying strength."""
+        return "12" in self.device_config
+
+    @property
+    def supports_clean_strategy(self) -> bool:
+        """Return whether the robot exposes a custom cleaning strategy."""
+        return "18" in self.device_config
 
     async def async_setup(self) -> None:
         """Connect to the cloud and start the MQTT listener."""
@@ -103,8 +135,15 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
         try:
             self.feature_flags = await self.client.get_feature_list()
+            self._feature_discovery_complete = True
         except Exception:
             _LOGGER.debug("Could not fetch device feature flags at startup")
+
+        try:
+            self.device_config = await self.client.get_config()
+            self._config_discovery_complete = True
+        except Exception:
+            _LOGGER.debug("Could not fetch device configuration at startup")
 
         try:
             await self.client.get_map()
@@ -274,6 +313,15 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             return self.client.state  # stale data keeps entities available
         else:
             self._consecutive_failures = 0
+
+        if not self._feature_discovery_complete:
+            with contextlib.suppress(Exception):
+                self.feature_flags = await self.client.get_feature_list()
+                self._feature_discovery_complete = True
+        if not self._config_discovery_complete:
+            with contextlib.suppress(Exception):
+                self.device_config = await self.client.get_config()
+                self._config_discovery_complete = True
 
         await self._async_refresh_cloud_metadata()
 

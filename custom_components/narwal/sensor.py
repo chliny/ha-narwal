@@ -15,11 +15,10 @@ from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfArea, UnitOfTi
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .narwal_client import ConsumableInfo, NarwalState
-
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
+from .narwal_client import ConsumableInfo, NarwalState
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -82,11 +81,16 @@ async def async_setup_entry(
     ]
     entities.append(NarwalChargingStateSensor(coordinator))
     known_consumables: set[str] = set()
+    task_record_added = False
 
-    def _add_consumables() -> None:
+    def _add_dynamic_entities() -> None:
+        nonlocal task_record_added
         state = coordinator.data
         if state is None:
             return
+        if state.task_records_supported and not task_record_added:
+            task_record_added = True
+            async_add_entities([NarwalTaskRecordSensor(coordinator)])
         new_keys = set(state.consumables) - known_consumables
         if not new_keys:
             return
@@ -102,8 +106,8 @@ async def async_setup_entry(
         )
 
     async_add_entities(entities)
-    _add_consumables()
-    entry.async_on_unload(coordinator.async_add_listener(_add_consumables))
+    _add_dynamic_entities()
+    entry.async_on_unload(coordinator.async_add_listener(_add_dynamic_entities))
 
 
 class NarwalSensor(NarwalEntity, SensorEntity):
@@ -167,6 +171,47 @@ class NarwalChargingStateSensor(NarwalEntity, SensorEntity):
         if self.native_value == "not_charging":
             return "mdi:battery-off-outline"
         return "mdi:battery-unknown"
+
+
+class NarwalTaskRecordSensor(NarwalEntity, SensorEntity):
+    """Expose the latest cleaning task returned by the cloud."""
+
+    _attr_translation_key = "task_record"
+    _attr_icon = "mdi:history"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("sensor", "task_record")
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the latest task record identifier."""
+        state = self.coordinator.data
+        record = state.latest_task_record if state else None
+        if not record:
+            return None
+        value = record.get("record_id") or record.get("report_id") or record.get("id")
+        return str(value) if value is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Return a concise summary of the latest task."""
+        state = self.coordinator.data
+        record = state.latest_task_record if state else None
+        if not record:
+            return {}
+        keys = (
+            "task_type",
+            "record_type",
+            "record_status",
+            "area",
+            "duration",
+            "start_time",
+            "end_time",
+            "error_code",
+            "custom_name",
+        )
+        return {key: record[key] for key in keys if record.get(key) is not None}
 
 
 _CONSUMABLE_ICON_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (

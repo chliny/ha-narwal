@@ -58,6 +58,9 @@
           "fully_charged": "已充满",
           "not_charging": "未充电"
         }
+      },
+      "task_record": {
+        "name": "最近清洁任务"
       }
     },
     "binary_sensor": {
@@ -105,6 +108,22 @@
           "dry": "偏干",
           "normal": "标准",
           "wet": "偏湿"
+        }
+      },
+      "clean_strategy": {
+        "name": "清洁策略",
+        "state": {
+          "area": "区域",
+          "room": "房间",
+          "smart": "智能"
+        }
+      },
+      "dry_mop_strength": {
+        "name": "拖布烘干强度",
+        "state": {
+          "quiet": "静音",
+          "strong": "强力",
+          "smart": "智能"
         }
       }
     }

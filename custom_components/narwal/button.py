@@ -47,12 +47,23 @@ async def async_setup_entry(
     """Set up Narwal base-station buttons."""
     del hass
     coordinator = entry.runtime_data
-    descriptions = [BUTTON_DESCRIPTIONS[-1]]
-    if coordinator.supports_single_dry_mop:
-        descriptions.insert(0, BUTTON_DESCRIPTIONS[0])
-    async_add_entities(
-        [NarwalActionButton(coordinator, description) for description in descriptions]
-    )
+    known: set[str] = set()
+
+    def _add_supported() -> None:
+        descriptions = []
+        if coordinator.supports_single_dry_mop:
+            descriptions.append(BUTTON_DESCRIPTIONS[0])
+        if coordinator.supports_dust_gathering:
+            descriptions.append(BUTTON_DESCRIPTIONS[1])
+        new = [description for description in descriptions if description.key not in known]
+        known.update(description.key for description in new)
+        if new:
+            async_add_entities(
+                [NarwalActionButton(coordinator, description) for description in new]
+            )
+
+    _add_supported()
+    entry.async_on_unload(coordinator.async_add_listener(_add_supported))
 
 
 class NarwalActionButton(NarwalEntity, ButtonEntity):

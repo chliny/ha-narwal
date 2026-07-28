@@ -6,6 +6,7 @@ Android app 2.6.90.  Callers must never log request bodies or response tokens.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -322,6 +323,28 @@ class NarwalCloudApi:
                 )
             )
         return messages
+
+    async def latest_task_record(
+        self,
+        *,
+        device_id: str,
+        product_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the latest cleaning record using the app's v2 endpoint."""
+        if self.account is None:
+            await self.login()
+        result = await self._request(
+            "GET",
+            "/sweeper-map-scheme-app-server/v2/work_record/getLatestRecord",
+            params={
+                "deviceId": device_id,
+                "productId": product_id,
+                "requestTime": str(int(time.time())),
+            },
+            device_id=device_id,
+            product_id=product_id,
+        )
+        return result if isinstance(result, dict) else None
 
 
 def _as_int(value: Any) -> int:

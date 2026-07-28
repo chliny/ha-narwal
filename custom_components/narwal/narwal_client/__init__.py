@@ -14,7 +14,14 @@ from .cloud_api import (
     NarwalCloudError,
 )
 from .cloud_client import NarwalCloudClient
-from .const import CommandResult, FanLevel, MopHumidity, WorkingStatus
+from .const import (
+    CommandResult,
+    CustomCleanStrategy,
+    DryMopStrength,
+    FanLevel,
+    MopHumidity,
+    WorkingStatus,
+)
 from .models import (
     CommandResponse,
     ConsumableInfo,
@@ -41,8 +48,10 @@ __all__ = [
     "NarwalNotification",
     "CommandResponse",
     "CommandResult",
+    "CustomCleanStrategy",
     "ConsumableInfo",
     "DeviceInfo",
+    "DryMopStrength",
     "FanLevel",
     "MapData",
     "MapDisplayData",

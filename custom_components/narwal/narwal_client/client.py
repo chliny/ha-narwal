@@ -17,6 +17,7 @@ from .const import (
     TOPIC_CMD_FORCE_END,
     TOPIC_CMD_GET_ALL_MAPS,
     TOPIC_CMD_GET_BASE_STATUS,
+    TOPIC_CMD_GET_CONFIG,
     TOPIC_CMD_GET_CURRENT_TASK,
     TOPIC_CMD_GET_DEVICE_INFO,
     TOPIC_CMD_GET_FEATURE_LIST,
@@ -24,6 +25,7 @@ from .const import (
     TOPIC_CMD_PAUSE,
     TOPIC_CMD_RECALL,
     TOPIC_CMD_RESUME,
+    TOPIC_CMD_SET_CONFIG,
     TOPIC_CMD_SET_FAN_LEVEL,
     TOPIC_CMD_SET_LED,
     TOPIC_CMD_SET_MOP_HUMIDITY,
@@ -33,6 +35,8 @@ from .const import (
     TOPIC_CMD_WASH_MOP,
     TOPIC_CMD_YELL,
     CommandResult,
+    CustomCleanStrategy,
+    DryMopStrength,
     FanLevel,
     MopHumidity,
 )
@@ -132,6 +136,28 @@ class NarwalClient:
     def _encode_varint_field(cls, field_num: int, value: int) -> bytes:
         """Encode a protobuf varint field."""
         return cls._encode_varint(field_num << 3) + cls._encode_varint(value)
+
+    @classmethod
+    def _encode_bytes_field(cls, field_num: int, value: bytes) -> bytes:
+        """Encode a protobuf length-delimited field."""
+        return (
+            cls._encode_varint(field_num << 3 | 2)
+            + cls._encode_varint(len(value))
+            + value
+        )
+
+    @classmethod
+    def _encode_custom_clean_order(cls, value: dict[str, Any]) -> bytes:
+        """Encode the app's CustomCleanOrder while preserving its fields."""
+        payload = b""
+        for field_num in (1, 2, 3, 4):
+            values = value.get(str(field_num))
+            if not isinstance(values, list):
+                values = [values]
+            for item in values:
+                if item is not None:
+                    payload += cls._encode_varint_field(field_num, int(item))
+        return payload
 
     async def send_command(
         self,
@@ -400,6 +426,56 @@ class NarwalClient:
         """Query the robot's feature flags."""
         response = await self.send_command(TOPIC_CMD_GET_FEATURE_LIST)
         return {int(key): int(value) for key, value in response.data.items()}
+
+    async def get_config(self) -> dict[str, Any]:
+        """Read device settings used for capability discovery."""
+        response = await self.send_command(TOPIC_CMD_GET_CONFIG)
+        config = response.data.get("2", {})
+        return config if isinstance(config, dict) else {}
+
+    async def set_dry_mop_strength(
+        self, strength: DryMopStrength | int
+    ) -> CommandResponse:
+        """Set the station mop drying strength."""
+        # SetConfig.Request field 13 in app 2.6.90.
+        return await self.send_command(
+            TOPIC_CMD_SET_CONFIG,
+            self._encode_varint_field(13, int(strength)),
+        )
+
+    async def set_custom_clean_strategy(
+        self,
+        strategy: CustomCleanStrategy | int,
+        current: dict[str, Any] | None = None,
+    ) -> CommandResponse:
+        """Set the default custom cleaning strategy."""
+        # SetConfig.Request field 18 contains CustomCleanStrategy; its field 1
+        # is CustomCleanStrategyOption.
+        nested = self._encode_varint_field(1, int(strategy))
+        # Preserve the area frequency and clean-order fields returned by
+        # config/get, matching the app's read-modify-write behavior.
+        if current:
+            area_option = current.get("2")
+            if area_option is not None:
+                nested += self._encode_varint_field(2, int(area_option))
+            clean_orders = current.get("3")
+            if not isinstance(clean_orders, list):
+                clean_orders = [clean_orders]
+            for value in clean_orders:
+                if isinstance(value, dict):
+                    nested += self._encode_bytes_field(
+                        3, self._encode_custom_clean_order(value)
+                    )
+            all_clean_orders = current.get("4")
+            if not isinstance(all_clean_orders, list):
+                all_clean_orders = [all_clean_orders]
+            for value in all_clean_orders:
+                if isinstance(value, dict):
+                    nested += self._encode_bytes_field(
+                        4, self._encode_custom_clean_order(value)
+                    )
+        payload = self._encode_bytes_field(18, nested)
+        return await self.send_command(TOPIC_CMD_SET_CONFIG, payload)
 
     async def get_status(self, full_update: bool = True) -> CommandResponse:
         """Query the robot's base status."""

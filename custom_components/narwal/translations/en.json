@@ -58,6 +58,9 @@
           "fully_charged": "Fully charged",
           "not_charging": "Not charging"
         }
+      },
+      "task_record": {
+        "name": "Latest cleaning task"
       }
     },
     "binary_sensor": {
@@ -105,6 +108,22 @@
           "dry": "Dry",
           "normal": "Normal",
           "wet": "Wet"
+        }
+      },
+      "clean_strategy": {
+        "name": "Cleaning strategy",
+        "state": {
+          "area": "Area",
+          "room": "Room",
+          "smart": "Smart"
+        }
+      },
+      "dry_mop_strength": {
+        "name": "Mop drying strength",
+        "state": {
+          "quiet": "Quiet",
+          "strong": "Strong",
+          "smart": "Smart"
         }
       }
     }

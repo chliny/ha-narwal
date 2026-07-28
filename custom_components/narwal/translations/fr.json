@@ -58,6 +58,9 @@
           "fully_charged": "Complètement chargé",
           "not_charging": "Pas en charge"
         }
+      },
+      "task_record": {
+        "name": "Dernière tâche de nettoyage"
       }
     },
     "binary_sensor": {
@@ -105,6 +108,22 @@
           "dry": "Sec",
           "normal": "Normal",
           "wet": "Humide"
+        }
+      },
+      "clean_strategy": {
+        "name": "Stratégie de nettoyage",
+        "state": {
+          "area": "Zone",
+          "room": "Pièce",
+          "smart": "Intelligent"
+        }
+      },
+      "dry_mop_strength": {
+        "name": "Intensité de séchage des serpillières",
+        "state": {
+          "quiet": "Silencieux",
+          "strong": "Fort",
+          "smart": "Intelligent"
         }
       }
     }

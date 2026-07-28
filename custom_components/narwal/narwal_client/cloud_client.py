@@ -222,12 +222,16 @@ class NarwalCloudClient(NarwalClient):
         device = self.cloud_device
         if device is None:
             raise NarwalConnectionError("Cloud device metadata is unavailable")
-        consumables, notifications = await asyncio.gather(
+        consumables, notifications, task_record = await asyncio.gather(
             self._api.consumables(
                 device_id=device.device_id,
                 product_id=device.product_id,
             ),
             self._api.notifications(
+                device_id=device.device_id,
+                product_id=device.product_id,
+            ),
+            self._api.latest_task_record(
                 device_id=device.device_id,
                 product_id=device.product_id,
             ),
@@ -250,11 +254,17 @@ class NarwalCloudClient(NarwalClient):
             )
         else:
             self.state.notifications = notifications
+        if isinstance(task_record, BaseException):
+            errors.append(task_record)
+            _LOGGER.debug("Narwal task record refresh failed: %s", task_record)
+        else:
+            self.state.task_records_supported = True
+            self.state.latest_task_record = task_record
         if any(isinstance(error, NarwalCloudAuthError) for error in errors):
             raise NarwalAuthenticationError(
                 "Narwal cloud credentials were rejected"
             )
-        if len(errors) == 2:
+        if len(errors) == 3:
             raise NarwalConnectionError(
                 "Cannot refresh Narwal cloud metadata"
             ) from errors[0]

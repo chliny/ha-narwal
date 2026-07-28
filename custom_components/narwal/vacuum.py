@@ -52,22 +52,32 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
     """Representation of a Narwal robot vacuum."""
 
     _attr_translation_key = "vacuum"
-    _attr_supported_features = (
+    _BASE_SUPPORTED_FEATURES = (
         VacuumEntityFeature.STATE
         | VacuumEntityFeature.START
         | VacuumEntityFeature.STOP
         | VacuumEntityFeature.PAUSE
         | VacuumEntityFeature.RETURN_HOME
-        | VacuumEntityFeature.FAN_SPEED
         | VacuumEntityFeature.LOCATE
     ) | (VacuumEntityFeature.CLEAN_AREA if Segment is not None else VacuumEntityFeature(0))
-    _attr_fan_speed_list = FAN_SPEED_LIST
-
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         """Initialize the vacuum entity."""
         super().__init__(coordinator)
         self._set_entity_identity("vacuum", "vacuum")
         self._last_fan_speed: str | None = None
+
+    @property
+    def supported_features(self) -> VacuumEntityFeature:
+        """Expose suction control only when the device reports it."""
+        features = self._BASE_SUPPORTED_FEATURES
+        if self.coordinator.supports_fan_speed:
+            features |= VacuumEntityFeature.FAN_SPEED
+        return features
+
+    @property
+    def fan_speed_list(self) -> list[str] | None:
+        """Return supported fan choices when suction control is available."""
+        return FAN_SPEED_LIST if self.coordinator.supports_fan_speed else None
 
     @staticmethod
     def _require_success(response: CommandResponse, action: str) -> None:
@@ -122,7 +132,17 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         so we track the last value set via the integration. Returns None
         until the user sets a fan speed for the first time.
         """
-        return self._last_fan_speed
+        if self._last_fan_speed is not None:
+            return self._last_fan_speed
+        raw = self.coordinator.client.state.raw_base_status.get("26")
+        try:
+            level = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return next(
+            (name for name, value in FAN_SPEED_MAP.items() if int(value) == level),
+            None,
+        )
 
     # Robot actions may need time to load a map and plan a route.
     _ACTION_TIMEOUT = 10.0
