@@ -19,6 +19,10 @@ from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .narwal_client import ConsumableInfo, NarwalState
+from .narwal_client.const import (
+    CONSUMABLE_MAINTAIN_TYPE_MAP,
+    CONSUMABLE_REPLACE_TYPE_MAP,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -44,9 +48,9 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         # working_status field 13 is cm²; divide by 10000 for m².
         # NEEDS LIVE VALIDATION: only populated during active cleaning.
-        value_fn=lambda state: round(state.cleaning_area / 10000, 2)
-        if state.cleaning_area > 0
-        else None,
+        value_fn=lambda state: (
+            round(state.cleaning_area / 10000, 2) if state.cleaning_area > 0 else None
+        ),
     ),
     NarwalSensorEntityDescription(
         key="cleaning_time",
@@ -56,9 +60,7 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         # working_status field 3 is session elapsed seconds.
         # NEEDS LIVE VALIDATION: only populated during active cleaning.
-        value_fn=lambda state: state.cleaning_time
-        if state.cleaning_time > 0
-        else None,
+        value_fn=lambda state: state.cleaning_time if state.cleaning_time > 0 else None,
     ),
     NarwalSensorEntityDescription(
         key="firmware_version",
@@ -82,6 +84,7 @@ async def async_setup_entry(
     entities.append(NarwalChargingStateSensor(coordinator))
     known_consumables: set[str] = set()
     task_record_added = False
+    optional_added: set[str] = set()
 
     def _add_dynamic_entities() -> None:
         nonlocal task_record_added
@@ -91,6 +94,21 @@ async def async_setup_entry(
         if state.task_records_supported and not task_record_added:
             task_record_added = True
             async_add_entities([NarwalTaskRecordSensor(coordinator)])
+        optional: list[tuple[str, SensorEntity]] = []
+        if state.battery_details_supported:
+            optional.append(("battery_health_details", NarwalBatteryHealthSensor(coordinator)))
+        if state.dry_mop_remaining_time_supported:
+            optional.append(("dry_mop_remaining_time", NarwalDryMopRemainingSensor(coordinator)))
+        if state.dust_bag_health_supported:
+            optional.append(("dust_bag_health", NarwalDustBagHealthSensor(coordinator)))
+        if state.clean_timeline_supported:
+            optional.append(("clean_timeline", NarwalCleanTimelineSensor(coordinator)))
+        if state.clean_progress_supported:
+            optional.append(("clean_progress", NarwalCleanProgressSensor(coordinator)))
+        new_optional = [entity for key, entity in optional if key not in optional_added]
+        optional_added.update(key for key, _entity in optional)
+        if new_optional:
+            async_add_entities(new_optional)
         new_keys = set(state.consumables) - known_consumables
         if not new_keys:
             return
@@ -174,7 +192,7 @@ class NarwalChargingStateSensor(NarwalEntity, SensorEntity):
 
 
 class NarwalTaskRecordSensor(NarwalEntity, SensorEntity):
-    """Expose the latest cleaning task returned by the cloud."""
+    """Expose cleaning-task history and fetched details."""
 
     _attr_translation_key = "task_record"
     _attr_icon = "mdi:history"
@@ -190,28 +208,143 @@ class NarwalTaskRecordSensor(NarwalEntity, SensorEntity):
         record = state.latest_task_record if state else None
         if not record:
             return None
-        value = record.get("record_id") or record.get("report_id") or record.get("id")
+        value = (
+            record.get("clean_record_id")
+            or record.get("record_id")
+            or record.get("report_id")
+            or record.get("id")
+        )
         return str(value) if value is not None else None
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        """Return a concise summary of the latest task."""
+        """Return the bounded record list and details fetched from the app API."""
         state = self.coordinator.data
-        record = state.latest_task_record if state else None
-        if not record:
+        if not state:
             return {}
-        keys = (
-            "task_type",
-            "record_type",
-            "record_status",
-            "area",
-            "duration",
-            "start_time",
-            "end_time",
-            "error_code",
-            "custom_name",
-        )
-        return {key: record[key] for key in keys if record.get(key) is not None}
+        return {
+            "record_count": len(state.task_records),
+            "records": state.task_records[:20],
+            "details": state.task_record_details,
+        }
+
+
+class NarwalBatteryHealthSensor(NarwalEntity, SensorEntity):
+    """Battery health state with all raw APK detail fields."""
+
+    _attr_translation_key = "battery_health_details"
+    _attr_icon = "mdi:battery-heart-variant"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("sensor", "battery_health_details")
+
+    @property
+    def native_value(self) -> int | str | None:
+        state = self.coordinator.data
+        return state.battery_details.get("health_state") if state else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        state = self.coordinator.data
+        return dict(state.battery_details) if state else {}
+
+
+class NarwalDryMopRemainingSensor(NarwalEntity, SensorEntity):
+    """Raw remaining drying time returned by the station."""
+
+    _attr_translation_key = "dry_mop_remaining_time"
+    _attr_icon = "mdi:timer-sand"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("sensor", "dry_mop_remaining_time")
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.coordinator.data
+        return state.dry_mop_remaining_time if state else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str]:
+        # APK protobuf names the field remainTime but does not declare a unit.
+        return {"protocol_unit": "not declared by APK schema"}
+
+
+class NarwalDustBagHealthSensor(NarwalEntity, SensorEntity):
+    """Latest dust-bag health value with its app history."""
+
+    _attr_translation_key = "dust_bag_health"
+    _attr_icon = "mdi:delete-variant"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("sensor", "dust_bag_health")
+
+    @property
+    def native_value(self) -> int | float | str | None:
+        state = self.coordinator.data
+        latest = state.dust_bag_health[-1] if state and state.dust_bag_health else None
+        if not latest:
+            return None
+        for key in ("end_health_Degree", "end_health_degree", "health_degree"):
+            if latest.get(key) is not None:
+                return latest[key]
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        state = self.coordinator.data
+        return {"history": state.dust_bag_health[-31:]} if state else {}
+
+
+class NarwalCleanTimelineSensor(NarwalEntity, SensorEntity):
+    """Current real-time cleaning timeline."""
+
+    _attr_translation_key = "clean_timeline"
+    _attr_icon = "mdi:timeline-clock"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("sensor", "clean_timeline")
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.coordinator.data
+        return len(state.clean_timeline) if state else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        state = self.coordinator.data
+        return {"events": state.clean_timeline[-20:]} if state else {}
+
+
+class NarwalCleanProgressSensor(NarwalEntity, SensorEntity):
+    """Real-time progress payload combined with confirmed live counters."""
+
+    _attr_translation_key = "clean_progress"
+    _attr_icon = "mdi:progress-clock"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("sensor", "clean_progress")
+
+    @property
+    def native_value(self) -> str | None:
+        state = self.coordinator.data
+        return state.working_status.name.lower() if state else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        state = self.coordinator.data
+        if not state:
+            return {}
+        return {
+            "cleaning_area_cm2": state.cleaning_area,
+            "cleaning_time_seconds": state.cleaning_time,
+            "progress": state.clean_progress,
+        }
 
 
 _CONSUMABLE_ICON_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -363,7 +496,7 @@ class NarwalConsumableSensor(NarwalEntity, SensorEntity):
         consumable = self._consumable
         if consumable is None:
             return {}
-        return {
+        attributes: dict[str, int | str] = {
             "type": consumable.type_id,
             "category": consumable.category,
             "code": consumable.code,
@@ -371,6 +504,22 @@ class NarwalConsumableSensor(NarwalEntity, SensorEntity):
             "total_duration": consumable.total_duration,
             "subtitle": consumable.subtitle,
         }
+        state = self.coordinator.data
+        mapping = (
+            CONSUMABLE_MAINTAIN_TYPE_MAP
+            if consumable.category == 1
+            else CONSUMABLE_REPLACE_TYPE_MAP
+        )
+        protocol_value = mapping.get(consumable.type_id)
+        if state and state.mqtt_consumables_supported and protocol_value is not None:
+            values = (
+                state.consumable_maintain_items
+                if consumable.category == 1
+                else state.consumable_replace_items
+            )
+            attributes["mqtt_reported"] = protocol_value in values
+            attributes["mqtt_protocol_value"] = protocol_value
+        return attributes
 
     @property
     def available(self) -> bool:

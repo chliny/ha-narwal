@@ -60,7 +60,22 @@
         }
       },
       "task_record": {
-        "name": "最近清洁任务"
+        "name": "清洁任务记录"
+      },
+      "battery_health_details": {
+        "name": "电池健康详情"
+      },
+      "dry_mop_remaining_time": {
+        "name": "拖布烘干剩余时间"
+      },
+      "dust_bag_health": {
+        "name": "尘袋健康度"
+      },
+      "clean_timeline": {
+        "name": "清洁时间线"
+      },
+      "clean_progress": {
+        "name": "实时清洁进度"
       }
     },
     "binary_sensor": {
@@ -81,6 +96,9 @@
       },
       "empty_dustbin": {
         "name": "基站集尘"
+      },
+      "start_clean_plan": {
+        "name": "启动所选清洁计划"
       }
     },
     "switch": {
@@ -125,6 +143,17 @@
           "strong": "强力",
           "smart": "智能"
         }
+      },
+      "clean_plan": {
+        "name": "已保存清洁计划"
+      },
+      "map": {
+        "name": "当前地图"
+      }
+    },
+    "number": {
+      "volume": {
+        "name": "音量"
       }
     }
   }

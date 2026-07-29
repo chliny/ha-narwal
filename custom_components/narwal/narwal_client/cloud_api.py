@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from aiohttp import ClientError, ClientResponseError, ClientSession
@@ -131,9 +132,7 @@ class NarwalCloudApi:
                 body = await response.json(content_type=None)
         except ClientResponseError as err:
             if err.status in (401, 403):
-                raise NarwalCloudAuthError(
-                    "Narwal cloud rejected authentication"
-                ) from err
+                raise NarwalCloudAuthError("Narwal cloud rejected authentication") from err
             raise NarwalCloudError("Narwal cloud request failed") from err
         except (ClientError, TimeoutError, ValueError) as err:
             raise NarwalCloudError("Narwal cloud request failed") from err
@@ -143,12 +142,8 @@ class NarwalCloudApi:
         code = body.get("code")
         if code not in (0, "0"):
             if path.endswith("/loginByPw") or str(code) in {"401", "403"}:
-                raise NarwalCloudAuthError(
-                    "Narwal cloud rejected authentication"
-                )
-            raise NarwalCloudError(
-                f"Narwal cloud rejected request (code={code})"
-            )
+                raise NarwalCloudAuthError("Narwal cloud rejected authentication")
+            raise NarwalCloudError(f"Narwal cloud rejected request (code={code})")
         result = body.get("result")
         return body.get("data") if result is None and "data" in body else result
 
@@ -203,9 +198,7 @@ class NarwalCloudApi:
         return [
             CloudDevice.from_json(value)
             for value in values
-            if isinstance(value, dict)
-            and value.get("deviceId")
-            and value.get("productId")
+            if isinstance(value, dict) and value.get("deviceId") and value.get("productId")
         ]
 
     async def broker(self) -> str:
@@ -276,6 +269,7 @@ class NarwalCloudApi:
                     usage_duration=_as_int(value.get("usage_duration")),
                     subtitle=str(value.get("subtitle") or ""),
                     code=code,
+                    reset_supported=bool(_as_int(value.get("reset_btn_switch"))),
                 )
             )
         return consumables
@@ -324,27 +318,94 @@ class NarwalCloudApi:
             )
         return messages
 
-    async def latest_task_record(
+    async def task_records(
         self,
         *,
         device_id: str,
         product_id: str,
+        days: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Return the app's cleaning-task history list."""
+        if self.account is None:
+            await self.login()
+        end_time = int(time.time() * 1000)
+        result = await self._request(
+            "GET",
+            "/sweeper-map-scheme-app-server/v2/work_record/all",
+            params={
+                "device_id": device_id,
+                "product_id": product_id,
+                "start_time": str(end_time - days * 86_400_000),
+                "end_time": str(end_time),
+            },
+            device_id=device_id,
+            product_id=product_id,
+        )
+        if isinstance(result, list):
+            return [item for item in result if isinstance(item, dict)]
+        if isinstance(result, dict):
+            values = next(
+                (
+                    result[key]
+                    for key in ("record_list", "work_record_list", "list", "records")
+                    if isinstance(result.get(key), list)
+                ),
+                [],
+            )
+            return [item for item in values if isinstance(item, dict)]
+        return []
+
+    async def task_record_detail(
+        self,
+        *,
+        device_id: str,
+        product_id: str,
+        record_id: str,
     ) -> dict[str, Any] | None:
-        """Return the latest cleaning record using the app's v2 endpoint."""
+        """Return one cleaning record detail."""
         if self.account is None:
             await self.login()
         result = await self._request(
             "GET",
-            "/sweeper-map-scheme-app-server/v2/work_record/getLatestRecord",
+            "/clean-record-app-server/v1/clean-record/detail",
             params={
-                "deviceId": device_id,
-                "productId": product_id,
-                "requestTime": str(int(time.time())),
+                "clean_record_id": record_id,
+                "product_id": product_id,
+                "device_id": device_id,
             },
             device_id=device_id,
             product_id=product_id,
         )
         return result if isinstance(result, dict) else None
+
+    async def dust_bag_health(
+        self,
+        *,
+        device_id: str,
+        product_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return dust-bag health history from the app endpoint."""
+        if self.account is None:
+            await self.login()
+        offset = datetime.now().astimezone().utcoffset()
+        hours = int(offset.total_seconds() / 3600) if offset else 0
+        result = await self._request(
+            "GET",
+            "/clean-record-app-server/v1/baseStation/getDustBagHealthDegree",
+            params={
+                "device_id": device_id,
+                "product_id": product_id,
+                "timezone": f"UTC{hours:+d}",
+            },
+            device_id=device_id,
+            product_id=product_id,
+        )
+        values = (
+            result
+            if isinstance(result, list)
+            else (result.get("list", []) if isinstance(result, dict) else [])
+        )
+        return [item for item in values if isinstance(item, dict)]
 
 
 def _as_int(value: Any) -> int:

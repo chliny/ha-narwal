@@ -13,7 +13,11 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
-from .narwal_client import CommandResponse, NarwalClient
+from .narwal_client import CommandResponse, ConsumableInfo, NarwalClient
+from .narwal_client.const import (
+    CONSUMABLE_MAINTAIN_TYPE_MAP,
+    CONSUMABLE_REPLACE_TYPE_MAP,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -39,6 +43,16 @@ BUTTON_DESCRIPTIONS = (
 )
 
 
+def _reset_protocol(consumable: ConsumableInfo) -> tuple[str, int] | None:
+    mapping = (
+        CONSUMABLE_MAINTAIN_TYPE_MAP if consumable.category == 1 else CONSUMABLE_REPLACE_TYPE_MAP
+    )
+    value = mapping.get(consumable.type_id)
+    if value is None:
+        return None
+    return ("maintain" if consumable.category == 1 else "replace", value)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
@@ -61,6 +75,37 @@ async def async_setup_entry(
             async_add_entities(
                 [NarwalActionButton(coordinator, description) for description in new]
             )
+        state = coordinator.data
+        if state is None:
+            return
+        if state.clean_plans and "start_clean_plan" not in known:
+            known.add("start_clean_plan")
+            async_add_entities([NarwalStartCleanPlanButton(coordinator)])
+        reset_entities = []
+        for consumable in state.consumables.values():
+            key = f"reset_consumable_{consumable.key}"
+            protocol = _reset_protocol(consumable)
+            protocol_reported = bool(
+                protocol
+                and protocol[1]
+                in (
+                    state.consumable_maintain_items
+                    if protocol[0] == "maintain"
+                    else state.consumable_replace_items
+                )
+            )
+            if (
+                key not in known
+                and consumable.reset_supported
+                and protocol is not None
+                and protocol_reported
+            ):
+                known.add(key)
+                reset_entities.append(
+                    NarwalConsumableResetButton(coordinator, consumable, *protocol)
+                )
+        if reset_entities:
+            async_add_entities(reset_entities)
 
     _add_supported()
     entry.async_on_unload(coordinator.async_add_listener(_add_supported))
@@ -85,6 +130,70 @@ class NarwalActionButton(NarwalEntity, ButtonEntity):
         response = await self._async_await_command(
             self.entity_description.action(self.coordinator.client),
             self.entity_description.key.replace("_", " "),
+        )
+        if not response.success:
+            raise HomeAssistantError(
+                f"Narwal action failed with result code {response.result_code}"
+            )
+        await self.coordinator.async_request_refresh()
+
+
+class NarwalStartCleanPlanButton(NarwalEntity, ButtonEntity):
+    """Start the plan selected by the clean-plan select entity."""
+
+    _attr_translation_key = "start_clean_plan"
+    _attr_icon = "mdi:play-circle-outline"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("button", "start_clean_plan")
+
+    async def async_press(self) -> None:
+        plan_id = self.coordinator.selected_clean_plan_id
+        if plan_id is None:
+            state = self.coordinator.data
+            if state and state.clean_plans:
+                plan_id = int(state.clean_plans[0]["id"])
+        if plan_id is None:
+            raise HomeAssistantError("No saved Narwal cleaning plan is available")
+        response = await self._async_await_command(
+            self.coordinator.client.start_clean_plan(plan_id),
+            "start clean plan",
+        )
+        if not response.success:
+            raise HomeAssistantError(
+                f"Narwal action failed with result code {response.result_code}"
+            )
+        await self.coordinator.async_request_refresh()
+
+
+class NarwalConsumableResetButton(NarwalEntity, ButtonEntity):
+    """Explicitly reset one app-declared consumable counter."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:restore"
+
+    def __init__(
+        self,
+        coordinator: NarwalCoordinator,
+        consumable: ConsumableInfo,
+        category: str,
+        protocol_value: int,
+    ) -> None:
+        super().__init__(coordinator)
+        self._consumable_key = consumable.key
+        self._category = category
+        self._protocol_value = protocol_value
+        self._attr_name = f"Reset {consumable.name}"
+        self._set_entity_identity("button", f"reset_consumable_{consumable.key}")
+
+    async def async_press(self) -> None:
+        response = await self._async_await_command(
+            self.coordinator.client.reset_consumable(
+                category=self._category,
+                protocol_value=self._protocol_value,
+            ),
+            f"reset consumable {self._consumable_key}",
         )
         if not response.success:
             raise HomeAssistantError(

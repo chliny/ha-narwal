@@ -46,9 +46,15 @@ async def async_setup_entry(
         if coordinator.supports_clean_strategy:
             entities.append(("clean_strategy", NarwalCleanStrategySelect(coordinator)))
         if coordinator.supports_dry_mop_strength:
-            entities.append(
-                ("dry_mop_strength", NarwalDryMopStrengthSelect(coordinator))
-            )
+            entities.append(("dry_mop_strength", NarwalDryMopStrengthSelect(coordinator)))
+        if coordinator.data and coordinator.data.clean_plans:
+            entities.append(("clean_plan", NarwalCleanPlanSelect(coordinator)))
+        if (
+            coordinator.data
+            and coordinator.data.saved_maps_supported
+            and len(coordinator.data.saved_maps) > 1
+        ):
+            entities.append(("map", NarwalMapSelect(coordinator)))
         new = [entity for key, entity in entities if key not in known]
         known.update(key for key, _entity in entities)
         if new:
@@ -189,3 +195,98 @@ class NarwalDryMopStrengthSelect(NarwalConfigSelect):
             )
         self.coordinator.device_config["12"] = int(strength)
         self.async_write_ha_state()
+
+
+def _named_options(values: list[dict[str, object]], id_key: str = "id") -> dict[str, int]:
+    """Build stable, unique select labels from app-provided names."""
+    result: dict[str, int] = {}
+    for value in values:
+        item_id = int(value[id_key])
+        name = str(value.get("name") or item_id)
+        label = name if name not in result else f"{name} ({item_id})"
+        result[label] = item_id
+    return result
+
+
+class NarwalCleanPlanSelect(NarwalEntity, SelectEntity):
+    """Choose a saved cleaning plan without starting it."""
+
+    _attr_translation_key = "clean_plan"
+    _attr_icon = "mdi:calendar-check"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("select", "clean_plan")
+
+    @property
+    def _option_map(self) -> dict[str, int]:
+        state = self.coordinator.data
+        return _named_options(state.clean_plans) if state else {}
+
+    @property
+    def options(self) -> list[str]:
+        return list(self._option_map)
+
+    @property
+    def current_option(self) -> str | None:
+        options = self._option_map
+        selected = self.coordinator.selected_clean_plan_id
+        if selected is None and options:
+            selected = next(iter(options.values()))
+            self.coordinator.selected_clean_plan_id = selected
+        return next(
+            (name for name, plan_id in options.items() if plan_id == selected),
+            None,
+        )
+
+    async def async_select_option(self, option: str) -> None:
+        plan_id = self._option_map.get(option)
+        if plan_id is None:
+            raise HomeAssistantError(f"Unsupported cleaning plan: {option}")
+        self.coordinator.selected_clean_plan_id = plan_id
+        self.async_write_ha_state()
+
+
+class NarwalMapSelect(NarwalEntity, SelectEntity):
+    """Switch between maps saved on the robot."""
+
+    _attr_translation_key = "map"
+    _attr_icon = "mdi:map-marker-multiple"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("select", "map")
+
+    @property
+    def _option_map(self) -> dict[str, int]:
+        state = self.coordinator.data
+        return _named_options(state.saved_maps) if state else {}
+
+    @property
+    def options(self) -> list[str]:
+        return list(self._option_map)
+
+    @property
+    def current_option(self) -> str | None:
+        state = self.coordinator.data
+        current = state.current_map_id if state else None
+        return next(
+            (name for name, map_id in self._option_map.items() if map_id == current),
+            None,
+        )
+
+    async def async_select_option(self, option: str) -> None:
+        map_id = self._option_map.get(option)
+        if map_id is None:
+            raise HomeAssistantError(f"Unsupported map: {option}")
+        response = await self._async_await_command(
+            self.coordinator.client.switch_map(map_id),
+            "switch map",
+        )
+        if not response.success:
+            raise HomeAssistantError(
+                f"Narwal action failed with result code {response.result_code}"
+            )
+        await self.coordinator.client.get_map()
+        await self.coordinator.client.get_all_maps()
+        self.coordinator.async_set_updated_data(self.coordinator.client.state)

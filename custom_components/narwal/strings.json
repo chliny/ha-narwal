@@ -60,7 +60,22 @@
         }
       },
       "task_record": {
-        "name": "Latest cleaning task"
+        "name": "Cleaning task history"
+      },
+      "battery_health_details": {
+        "name": "Battery health details"
+      },
+      "dry_mop_remaining_time": {
+        "name": "Mop drying remaining time"
+      },
+      "dust_bag_health": {
+        "name": "Dust bag health"
+      },
+      "clean_timeline": {
+        "name": "Cleaning timeline"
+      },
+      "clean_progress": {
+        "name": "Real-time cleaning progress"
       }
     },
     "binary_sensor": {
@@ -81,6 +96,9 @@
       },
       "empty_dustbin": {
         "name": "Empty dustbin"
+      },
+      "start_clean_plan": {
+        "name": "Start selected cleaning plan"
       }
     },
     "switch": {
@@ -125,6 +143,17 @@
           "strong": "Strong",
           "smart": "Smart"
         }
+      },
+      "clean_plan": {
+        "name": "Saved cleaning plan"
+      },
+      "map": {
+        "name": "Active map"
+      }
+    },
+    "number": {
+      "volume": {
+        "name": "Volume"
       }
     }
   }

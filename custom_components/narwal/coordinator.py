@@ -75,6 +75,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self.device_config: dict[str, object] = {}
         self._feature_discovery_complete = False
         self._config_discovery_complete = False
+        self._extended_refresh_count = 0
+        self.selected_clean_plan_id: int | None = None
 
     @property
     def supports_single_dry_mop(self) -> bool:
@@ -108,6 +110,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     def supports_clean_strategy(self) -> bool:
         """Return whether the robot exposes a custom cleaning strategy."""
         return "18" in self.device_config
+
+    @property
+    def supports_volume(self) -> bool:
+        """Return whether config/get exposes speaker volume."""
+        return "1" in self.device_config
 
     async def async_setup(self) -> None:
         """Connect to the cloud and start the MQTT listener."""
@@ -150,6 +157,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         except Exception:
             _LOGGER.debug("Could not fetch initial map")
 
+        await self._async_refresh_extended_state(include_static=True)
         await self._async_refresh_cloud_metadata()
 
         # Subscribe to broadcast topics (display_map, working_status, etc.)
@@ -199,6 +207,31 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 "Could not refresh Narwal consumables or notifications",
                 exc_info=True,
             )
+
+    async def _async_refresh_extended_state(self, *, include_static: bool) -> None:
+        """Probe and refresh optional robot-side APK protocol features."""
+        calls = [
+            self.client.get_dry_mop_remaining_time,
+            self.client.get_clean_progress,
+            self.client.get_clean_timeline,
+        ]
+        if include_static:
+            calls.extend(
+                (
+                    self.client.get_battery_info,
+                    self.client.get_consumable_info,
+                    self.client.get_clean_plans,
+                    self.client.get_all_maps,
+                )
+            )
+        for call in calls:
+            try:
+                await call()
+            except Exception:
+                _LOGGER.debug(
+                    "Optional Narwal feature query %s is unsupported or unavailable",
+                    call.__name__,
+                )
 
     async def _async_listen(self) -> None:
         """Run the transport listener and request reauth on credential failure."""
@@ -324,6 +357,10 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 self._config_discovery_complete = True
 
         await self._async_refresh_cloud_metadata()
+        self._extended_refresh_count += 1
+        await self._async_refresh_extended_state(
+            include_static=self._extended_refresh_count % 5 == 0
+        )
 
         # Retry map fetch if it failed during setup
         if self.client.state.map_data is None:

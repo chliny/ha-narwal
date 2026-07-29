@@ -17,19 +17,27 @@ from .const import (
     TOPIC_CMD_FORCE_END,
     TOPIC_CMD_GET_ALL_MAPS,
     TOPIC_CMD_GET_BASE_STATUS,
+    TOPIC_CMD_GET_BATTERY_INFO,
+    TOPIC_CMD_GET_CLEAN_PLANS,
+    TOPIC_CMD_GET_CLEAN_PROGRESS,
+    TOPIC_CMD_GET_CLEAN_TIMELINE,
     TOPIC_CMD_GET_CONFIG,
+    TOPIC_CMD_GET_CONSUMABLE_INFO,
     TOPIC_CMD_GET_CURRENT_TASK,
     TOPIC_CMD_GET_DEVICE_INFO,
+    TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME,
     TOPIC_CMD_GET_FEATURE_LIST,
     TOPIC_CMD_GET_MAP,
     TOPIC_CMD_PAUSE,
     TOPIC_CMD_RECALL,
+    TOPIC_CMD_RESET_CONSUMABLE_INFO,
     TOPIC_CMD_RESUME,
     TOPIC_CMD_SET_CONFIG,
     TOPIC_CMD_SET_FAN_LEVEL,
     TOPIC_CMD_SET_LED,
     TOPIC_CMD_SET_MOP_HUMIDITY,
     TOPIC_CMD_START_CLEAN,
+    TOPIC_CMD_SWITCH_MAP,
     TOPIC_CMD_TAKE_PICTURE,
     TOPIC_CMD_WASH_AND_DRY_MOP,
     TOPIC_CMD_WASH_MOP,
@@ -110,6 +118,8 @@ class NarwalClient:
         elif short_topic == "map/display_map":
             self.state.map_display_data = MapDisplayData.from_broadcast(decoded)
             self._last_display_map_time = time.monotonic()
+        elif short_topic == "status/time_line_status":
+            self._update_clean_timeline(decoded)
 
         if self.on_state_update is not None:
             self.on_state_update(self.state)
@@ -140,11 +150,7 @@ class NarwalClient:
     @classmethod
     def _encode_bytes_field(cls, field_num: int, value: bytes) -> bytes:
         """Encode a protobuf length-delimited field."""
-        return (
-            cls._encode_varint(field_num << 3 | 2)
-            + cls._encode_varint(len(value))
-            + value
-        )
+        return cls._encode_varint(field_num << 3 | 2) + cls._encode_varint(len(value)) + value
 
     @classmethod
     def _encode_custom_clean_order(cls, value: dict[str, Any]) -> bytes:
@@ -433,14 +439,19 @@ class NarwalClient:
         config = response.data.get("2", {})
         return config if isinstance(config, dict) else {}
 
-    async def set_dry_mop_strength(
-        self, strength: DryMopStrength | int
-    ) -> CommandResponse:
+    async def set_dry_mop_strength(self, strength: DryMopStrength | int) -> CommandResponse:
         """Set the station mop drying strength."""
         # SetConfig.Request field 13 in app 2.6.90.
         return await self.send_command(
             TOPIC_CMD_SET_CONFIG,
             self._encode_varint_field(13, int(strength)),
+        )
+
+    async def set_volume(self, percentage: int) -> CommandResponse:
+        """Set speaker volume (SetConfig.Request.volumePercentage, field 1)."""
+        return await self.send_command(
+            TOPIC_CMD_SET_CONFIG,
+            self._encode_varint_field(1, max(0, min(100, int(percentage)))),
         )
 
     async def set_custom_clean_strategy(
@@ -463,17 +474,13 @@ class NarwalClient:
                 clean_orders = [clean_orders]
             for value in clean_orders:
                 if isinstance(value, dict):
-                    nested += self._encode_bytes_field(
-                        3, self._encode_custom_clean_order(value)
-                    )
+                    nested += self._encode_bytes_field(3, self._encode_custom_clean_order(value))
             all_clean_orders = current.get("4")
             if not isinstance(all_clean_orders, list):
                 all_clean_orders = [all_clean_orders]
             for value in all_clean_orders:
                 if isinstance(value, dict):
-                    nested += self._encode_bytes_field(
-                        4, self._encode_custom_clean_order(value)
-                    )
+                    nested += self._encode_bytes_field(4, self._encode_custom_clean_order(value))
         payload = self._encode_bytes_field(18, nested)
         return await self.send_command(TOPIC_CMD_SET_CONFIG, payload)
 
@@ -502,11 +509,203 @@ class NarwalClient:
             response.data,
             product_key=product_key,
         )
+        payload = response.data.get("2")
+        if isinstance(payload, dict):
+            map_id = self._as_int(payload.get("1"))
+            if map_id is not None:
+                self.state.current_map_id = map_id
         return self.state.map_data
 
     async def get_all_maps(self) -> CommandResponse:
-        """Download all saved maps."""
-        return await self.send_command(TOPIC_CMD_GET_ALL_MAPS, timeout=15.0)
+        """Download and retain the reduced list of saved maps."""
+        response = await self.send_command(TOPIC_CMD_GET_ALL_MAPS, timeout=15.0)
+        values = response.data.get("2", [])
+        if isinstance(values, dict):
+            values = [values]
+        maps: list[dict[str, Any]] = []
+        for value in values if isinstance(values, list) else []:
+            if not isinstance(value, dict):
+                continue
+            map_id = self._as_int(value.get("1"))
+            if map_id is None:
+                continue
+            maps.append(
+                {
+                    "id": map_id,
+                    "name": self._as_text(value.get("28")) or f"Map {map_id}",
+                    "is_main": bool(self._as_int(value.get("30")) or 0),
+                }
+            )
+        self.state.saved_maps = maps
+        self.state.saved_maps_supported = response.success
+        if self.state.current_map_id is None:
+            current = next((item for item in maps if item["is_main"]), None)
+            if current:
+                self.state.current_map_id = int(current["id"])
+        return response
+
+    async def switch_map(self, map_id: int) -> CommandResponse:
+        """Switch the robot's active map."""
+        response = await self.send_command(
+            TOPIC_CMD_SWITCH_MAP,
+            self._encode_varint_field(1, int(map_id)),
+            timeout=15.0,
+        )
+        if response.success:
+            self.state.current_map_id = int(map_id)
+        return response
+
+    async def get_battery_info(self) -> CommandResponse:
+        """Read the APK battery-health detail payload."""
+        response = await self.send_command(TOPIC_CMD_GET_BATTERY_INFO)
+        names = {
+            "1": "full_charge_capacity",
+            "2": "charge_cycle_count",
+            "3": "serial_number",
+            "4": "state_of_charge",
+            "5": "temperature",
+            "6": "voltage",
+            "7": "current",
+            "8": "health_state",
+            "9": "rated_capacity",
+        }
+        details = {
+            name: self._plain_value(response.data[field])
+            for field, name in names.items()
+            if field in response.data
+        }
+        # BatteryInfo.Response has no ServiceResult field; field 1 is capacity.
+        if details:
+            self.state.battery_details = details
+            self.state.battery_details_supported = True
+        return response
+
+    async def get_dry_mop_remaining_time(self) -> CommandResponse:
+        """Read the remaining mop-drying time reported by the station."""
+        response = await self.send_command(TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME)
+        remain = self._as_int(response.data.get("2"))
+        if response.success and remain is not None:
+            self.state.dry_mop_remaining_time = remain
+            self.state.dry_mop_remaining_time_supported = True
+        return response
+
+    async def get_consumable_info(self) -> CommandResponse:
+        """Read robot-side consumable maintenance/replacement status."""
+        response = await self.send_command(TOPIC_CMD_GET_CONSUMABLE_INFO)
+        payload = response.data.get("1")
+        if isinstance(payload, dict):
+            self.state.consumable_maintain_items = self._int_values(payload.get("1"))
+            self.state.consumable_replace_items = self._int_values(payload.get("2"))
+            self.state.mqtt_consumables_supported = True
+        return response
+
+    async def reset_consumable(self, *, category: str, protocol_value: int) -> CommandResponse:
+        """Reset one robot-side consumable counter."""
+        field = 1 if category == "maintain" else 2
+        nested = self._encode_varint_field(field, int(protocol_value))
+        response = await self.send_command(
+            TOPIC_CMD_RESET_CONSUMABLE_INFO,
+            self._encode_bytes_field(1, nested),
+        )
+        if response.success:
+            await self.get_consumable_info()
+        return response
+
+    async def get_clean_plans(self) -> CommandResponse:
+        """Read saved cleaning plans/quick tasks."""
+        response = await self.send_command(TOPIC_CMD_GET_CLEAN_PLANS)
+        values = response.data.get("2", [])
+        if isinstance(values, dict):
+            values = [values]
+        plans: list[dict[str, Any]] = []
+        for value in values if isinstance(values, list) else []:
+            if not isinstance(value, dict):
+                continue
+            plan_id = self._as_int(value.get("1"))
+            if plan_id is None:
+                continue
+            plans.append(
+                {
+                    "id": plan_id,
+                    "map_id": self._as_int(value.get("2")),
+                    "clean_mode": self._as_int(value.get("3")),
+                    "is_custom": bool(self._as_int(value.get("4")) or 0),
+                    "name": self._as_text(value.get("5")) or f"Plan {plan_id}",
+                    "shown_in_station": bool(self._as_int(value.get("6")) or 0),
+                    "perform_times": self._as_int(value.get("7")),
+                    "order": self._as_int(value.get("8")),
+                }
+            )
+        if response.success:
+            self.state.clean_plans = plans
+            self.state.clean_plans_supported = True
+        return response
+
+    async def start_clean_plan(self, plan_id: int) -> CommandResponse:
+        """Start one saved plan using StartWithPlan.Request.planId."""
+        return await self.send_command(
+            TOPIC_CMD_START_CLEAN,
+            self._encode_varint_field(1, int(plan_id)),
+            timeout=10.0,
+        )
+
+    async def get_clean_timeline(self) -> CommandResponse:
+        """Request current cleaning timeline data."""
+        response = await self.send_command(TOPIC_CMD_GET_CLEAN_TIMELINE)
+        timeline = response.data.get("2")
+        if isinstance(timeline, dict):
+            self._update_clean_timeline(timeline)
+        return response
+
+    async def get_clean_progress(self) -> CommandResponse:
+        """Request the APK's current clean-progress detail payload."""
+        response = await self.send_command(TOPIC_CMD_GET_CLEAN_PROGRESS)
+        if not response.not_applicable and response.data:
+            self.state.clean_progress = self._plain_dict(response.data)
+            self.state.clean_progress_supported = True
+        return response
+
+    def _update_clean_timeline(self, decoded: dict[str, Any]) -> None:
+        """Store the repeated RobotEventNode list without inventing enum labels."""
+        values = decoded.get("1", [])
+        if isinstance(values, dict):
+            values = [values]
+        self.state.clean_timeline = [
+            self._plain_dict(value) for value in values if isinstance(value, dict)
+        ]
+        self.state.clean_timeline_supported = True
+
+    @classmethod
+    def _plain_dict(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return {str(key): cls._plain_value(item) for key, item in value.items()}
+
+    @classmethod
+    def _plain_value(cls, value: Any) -> Any:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, dict):
+            return cls._plain_dict(value)
+        if isinstance(value, list):
+            return [cls._plain_value(item) for item in value]
+        return value
+
+    @staticmethod
+    def _as_text(value: Any) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value) if value not in (None, "") else ""
+
+    @staticmethod
+    def _as_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _int_values(cls, value: Any) -> set[int]:
+        values = value if isinstance(value, list) else [value]
+        return {parsed for item in values if (parsed := cls._as_int(item)) is not None}
 
     async def take_picture(self) -> bytes | None:
         """Request the camera's encrypted raw image."""

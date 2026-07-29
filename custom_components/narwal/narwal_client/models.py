@@ -59,24 +59,28 @@ class RoomInfo:
 
     def __post_init__(self):
         if self.ROOM_TYPE_NAMES is None:
-            object.__setattr__(self, "ROOM_TYPE_NAMES", {
-                0: "Room",
-                1: "Primary Bedroom",
-                2: "Secondary Bedroom",
-                3: "Living Room",
-                4: "Kitchen",
-                5: "Study",
-                6: "Bathroom",
-                7: "Dining Room",
-                8: "Corridor",
-                9: "Balcony",
-                10: "Utility Room",
-                11: "Cloak Room",
-                12: "Nursery",
-                13: "Recreation Room",
-                14: "Shower Room",
-                15: "Other",
-            })
+            object.__setattr__(
+                self,
+                "ROOM_TYPE_NAMES",
+                {
+                    0: "Room",
+                    1: "Primary Bedroom",
+                    2: "Secondary Bedroom",
+                    3: "Living Room",
+                    4: "Kitchen",
+                    5: "Study",
+                    6: "Bathroom",
+                    7: "Dining Room",
+                    8: "Corridor",
+                    9: "Balcony",
+                    10: "Utility Room",
+                    11: "Cloak Room",
+                    12: "Nursery",
+                    13: "Recreation Room",
+                    14: "Shower Room",
+                    15: "Other",
+                },
+            )
 
     @property
     def display_name(self) -> str:
@@ -90,8 +94,9 @@ class RoomInfo:
         if self.name:
             return self.name
         overrides = self.MODEL_ROOM_TYPE_OVERRIDES.get(self.model_key, {})
-        base = overrides.get(self.room_sub_type) or \
-            self.ROOM_TYPE_NAMES.get(self.room_sub_type, "Room")
+        base = overrides.get(self.room_sub_type) or self.ROOM_TYPE_NAMES.get(
+            self.room_sub_type, "Room"
+        )
         if self.instance_index > 1:
             return f"{base} {self.instance_index}"
         return base
@@ -115,12 +120,12 @@ class ObstacleInfo:
     """
 
     id: int = 0
-    type_id: int = 0       # Furniture enum from APK map_furniture.json
+    type_id: int = 0  # Furniture enum from APK map_furniture.json
     center_x: float = 0.0  # World X coordinate
     center_y: float = 0.0  # World Y coordinate
-    width: float = 0.0     # Object width in grid units
-    height: float = 0.0    # Object height in grid units
-    angle: float = 0.0     # Rotation in degrees
+    width: float = 0.0  # Object width in grid units
+    height: float = 0.0  # Object height in grid units
+    angle: float = 0.0  # Rotation in degrees
 
     # Full furniture type enum from APK map_furniture.json
     TYPE_NAMES: ClassVar[dict[int, str]] = {
@@ -223,15 +228,17 @@ def _parse_obstacles(field32: dict) -> list[ObstacleInfo]:
             h = _to_float32(pos.get("3")) if isinstance(pos, dict) else None
             angle = _to_float32(item.get("4"))
 
-            obstacles.append(ObstacleInfo(
-                id=int(item.get("1", 0)),
-                type_id=int(item.get("2", 0)),
-                center_x=cx or 0.0,
-                center_y=cy or 0.0,
-                width=w or 0.0,
-                height=h or 0.0,
-                angle=angle or 0.0,
-            ))
+            obstacles.append(
+                ObstacleInfo(
+                    id=int(item.get("1", 0)),
+                    type_id=int(item.get("2", 0)),
+                    center_x=cx or 0.0,
+                    center_y=cy or 0.0,
+                    width=w or 0.0,
+                    height=h or 0.0,
+                    angle=angle or 0.0,
+                )
+            )
         except (ValueError, TypeError, AttributeError):
             continue
     return obstacles
@@ -256,9 +263,7 @@ class MapData:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_response(
-        cls, decoded: dict[str, Any], product_key: str = ""
-    ) -> MapData:
+    def from_response(cls, decoded: dict[str, Any], product_key: str = "") -> MapData:
         """Parse map data from a get_map field5 response.
 
         Args:
@@ -286,14 +291,16 @@ class MapData:
                         name = name[2:-1]
                 else:
                     name = str(name_raw)
-                rooms.append(RoomInfo(
-                    room_id=int(room.get("1", 0)),
-                    name=name,
-                    room_sub_type=int(room.get("2", 0)),
-                    category=int(room.get("4", 0)),
-                    instance_index=int(room.get("8", 0)),
-                    model_key=product_key,
-                ))
+                rooms.append(
+                    RoomInfo(
+                        room_id=int(room.get("1", 0)),
+                        name=name,
+                        room_sub_type=int(room.get("2", 0)),
+                        category=int(room.get("4", 0)),
+                        instance_index=int(room.get("8", 0)),
+                        model_key=product_key,
+                    )
+                )
 
         compressed = payload.get("17", b"")
         if isinstance(compressed, str):
@@ -386,7 +393,10 @@ class MapDisplayData:
     dock_ref_y: float = 0.0
 
     def to_grid_coords(
-        self, resolution: int, origin_x: int, origin_y: int,
+        self,
+        resolution: int,
+        origin_x: int,
+        origin_y: int,
     ) -> tuple[float, float] | None:
         """Convert world-coordinate position (dm) to grid pixel coordinates.
 
@@ -496,6 +506,7 @@ class ConsumableInfo:
     usage_duration: int
     subtitle: str = ""
     code: str = ""
+    reset_supported: bool = False
 
     @property
     def remaining_percentage(self) -> int | None:
@@ -539,11 +550,7 @@ class NarwalNotification:
             "dust bag",
             "detergent",
         )
-        return (
-            "consumable"
-            if any(term in text for term in consumable_terms)
-            else "notification"
-        )
+        return "consumable" if any(term in text for term in consumable_terms) else "notification"
 
 
 @dataclass
@@ -567,7 +574,30 @@ class NarwalState:
     consumables: dict[str, ConsumableInfo] = field(default_factory=dict)
     notifications: list[NarwalNotification] = field(default_factory=list)
     latest_task_record: dict[str, Any] | None = None
+    task_records: list[dict[str, Any]] = field(default_factory=list)
+    task_record_details: dict[str, dict[str, Any]] = field(default_factory=dict)
     task_records_supported: bool = False
+    dust_bag_health: list[dict[str, Any]] = field(default_factory=list)
+    dust_bag_health_supported: bool = False
+
+    # Optional MQTT features. A corresponding ``*_supported`` flag becomes
+    # true only after that robot successfully answers the APK protocol topic.
+    battery_details: dict[str, Any] = field(default_factory=dict)
+    battery_details_supported: bool = False
+    dry_mop_remaining_time: int | None = None
+    dry_mop_remaining_time_supported: bool = False
+    consumable_maintain_items: set[int] = field(default_factory=set)
+    consumable_replace_items: set[int] = field(default_factory=set)
+    mqtt_consumables_supported: bool = False
+    clean_plans: list[dict[str, Any]] = field(default_factory=list)
+    clean_plans_supported: bool = False
+    saved_maps: list[dict[str, Any]] = field(default_factory=list)
+    saved_maps_supported: bool = False
+    current_map_id: int | None = None
+    clean_timeline: list[dict[str, Any]] = field(default_factory=list)
+    clean_timeline_supported: bool = False
+    clean_progress: dict[str, Any] = field(default_factory=dict)
+    clean_progress_supported: bool = False
 
     # Session
     session_id: str = ""
@@ -640,11 +670,7 @@ class NarwalState:
     @property
     def is_cleaning(self) -> bool:
         """True when actively cleaning (not paused, not returning to dock)."""
-        return (
-            self.has_cleaning_task
-            and not self.is_paused
-            and not self.is_returning
-        )
+        return self.has_cleaning_task and not self.is_paused and not self.is_returning
 
     @property
     def is_docked(self) -> bool:
@@ -655,10 +681,7 @@ class NarwalState:
         """
         if self.working_status.is_station_task:
             return True
-        if (
-            self.working_status.is_cleaning_task
-            or self.working_status.is_returning_task
-        ):
+        if self.working_status.is_cleaning_task or self.working_status.is_returning_task:
             return False
         if self.working_status == WorkingStatus.IDLE:
             if self.idle_status in (1, 6):
@@ -692,9 +715,7 @@ class NarwalState:
             WorkingStatus.SWEEP_THEN_MOP: {1, 2, 3, 12, 16, 17},
             WorkingStatus.SMART_CLEAN: {1, 2, 3, 14, 18, 19},
         }
-        return self.task_sub_status in returning_sub_statuses.get(
-            self.working_status, set()
-        )
+        return self.task_sub_status in returning_sub_statuses.get(self.working_status, set())
 
     def update_from_working_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded working_status message.
@@ -766,8 +787,7 @@ class NarwalState:
                 except (ValueError, TypeError):
                     raw_val = field3["1"]
                     _LOGGER.warning(
-                        "Unknown RobotTaskStatus TaskType value: %s; "
-                        "treating it as UNSPECIFIED",
+                        "Unknown RobotTaskStatus TaskType value: %s; treating it as UNSPECIFIED",
                         raw_val,
                     )
                     self.working_status = WorkingStatus.UNKNOWN
@@ -794,9 +814,7 @@ class NarwalState:
             }.get(self.working_status)
             try:
                 self.task_sub_status = (
-                    int(field3.get(str(task_field), 0))
-                    if task_field is not None
-                    else 0
+                    int(field3.get(str(task_field), 0)) if task_field is not None else 0
                 )
             except (ValueError, TypeError):
                 self.task_sub_status = 0

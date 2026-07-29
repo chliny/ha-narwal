@@ -222,7 +222,7 @@ class NarwalCloudClient(NarwalClient):
         device = self.cloud_device
         if device is None:
             raise NarwalConnectionError("Cloud device metadata is unavailable")
-        consumables, notifications, task_record = await asyncio.gather(
+        consumables, notifications, task_records, dust_bag_health = await asyncio.gather(
             self._api.consumables(
                 device_id=device.device_id,
                 product_id=device.product_id,
@@ -231,7 +231,11 @@ class NarwalCloudClient(NarwalClient):
                 device_id=device.device_id,
                 product_id=device.product_id,
             ),
-            self._api.latest_task_record(
+            self._api.task_records(
+                device_id=device.device_id,
+                product_id=device.product_id,
+            ),
+            self._api.dust_bag_health(
                 device_id=device.device_id,
                 product_id=device.product_id,
             ),
@@ -254,20 +258,71 @@ class NarwalCloudClient(NarwalClient):
             )
         else:
             self.state.notifications = notifications
-        if isinstance(task_record, BaseException):
-            errors.append(task_record)
-            _LOGGER.debug("Narwal task record refresh failed: %s", task_record)
+        if isinstance(task_records, BaseException):
+            errors.append(task_records)
+            _LOGGER.debug("Narwal task record refresh failed: %s", task_records)
         else:
             self.state.task_records_supported = True
-            self.state.latest_task_record = task_record
-        if any(isinstance(error, NarwalCloudAuthError) for error in errors):
-            raise NarwalAuthenticationError(
-                "Narwal cloud credentials were rejected"
+            self.state.task_records = task_records
+            self.state.latest_task_record = task_records[0] if task_records else None
+            self.state.task_record_details = await self._get_task_record_details(
+                device,
+                task_records[:5],
+                self.state.task_record_details,
             )
-        if len(errors) == 3:
-            raise NarwalConnectionError(
-                "Cannot refresh Narwal cloud metadata"
-            ) from errors[0]
+        if isinstance(dust_bag_health, BaseException):
+            errors.append(dust_bag_health)
+            _LOGGER.debug("Narwal dust-bag health refresh failed: %s", dust_bag_health)
+        else:
+            self.state.dust_bag_health_supported = True
+            self.state.dust_bag_health = dust_bag_health
+        if any(isinstance(error, NarwalCloudAuthError) for error in errors):
+            raise NarwalAuthenticationError("Narwal cloud credentials were rejected")
+        if len(errors) == 4:
+            raise NarwalConnectionError("Cannot refresh Narwal cloud metadata") from errors[0]
+
+    async def _get_task_record_details(
+        self,
+        device: CloudDevice,
+        records: list[dict[str, object]],
+        cached: dict[str, dict[str, object]],
+    ) -> dict[str, dict[str, object]]:
+        """Fetch a bounded set of task details for HA attributes."""
+        ids = [
+            str(value)
+            for record in records
+            if (
+                value := (
+                    record.get("clean_record_id")
+                    or record.get("record_id")
+                    or record.get("report_id")
+                    or record.get("id")
+                )
+            )
+            is not None
+        ]
+        missing_ids = [record_id for record_id in ids if record_id not in cached]
+        results = await asyncio.gather(
+            *(
+                self._api.task_record_detail(
+                    device_id=device.device_id,
+                    product_id=device.product_id,
+                    record_id=record_id,
+                )
+                for record_id in missing_ids
+            ),
+            return_exceptions=True,
+        )
+        fetched = {
+            record_id: detail
+            for record_id, detail in zip(missing_ids, results, strict=False)
+            if isinstance(detail, dict)
+        }
+        return {
+            record_id: detail
+            for record_id in ids
+            if (detail := fetched.get(record_id) or cached.get(record_id)) is not None
+        }
 
     async def connect(self) -> None:
         """Login, discover the broker, and open MQTT5 over TLS."""
@@ -288,9 +343,7 @@ class NarwalCloudClient(NarwalClient):
                 raise NarwalConnectionError("Configured robot is no longer bound to this account")
             broker_url = await self._api.broker()
         except NarwalCloudAuthError as err:
-            raise NarwalAuthenticationError(
-                "Narwal cloud credentials were rejected"
-            ) from err
+            raise NarwalAuthenticationError("Narwal cloud credentials were rejected") from err
         except NarwalCloudError as err:
             raise NarwalConnectionError("Cannot connect to the Narwal cloud") from err
 
@@ -312,9 +365,7 @@ class NarwalCloudClient(NarwalClient):
         properties = mqtt.Properties(mqtt.PacketTypes.CONNECT)
         properties.ReceiveMaximum = 128
         properties.MaximumPacketSize = 1_048_576
-        properties.UserProperty = [
-            ("startTimestamp", _connect_start_timestamp())
-        ]
+        properties.UserProperty = [("startTimestamp", _connect_start_timestamp())]
         try:
             await asyncio.to_thread(
                 client.connect,
@@ -361,10 +412,7 @@ class NarwalCloudClient(NarwalClient):
             )
             return
         prefix = f"{self.topic_prefix}/{self.device_id}"
-        topics = [
-            (f"{prefix}/{topic}", mqtt.SubscribeOptions(qos=0))
-            for topic in _COMMON_THEMES
-        ]
+        topics = [(f"{prefix}/{topic}", mqtt.SubscribeOptions(qos=0)) for topic in _COMMON_THEMES]
         result, mid = client.subscribe(topics)
         if result != mqtt.MQTT_ERR_SUCCESS:
             loop.call_soon_threadsafe(
@@ -394,9 +442,7 @@ class NarwalCloudClient(NarwalClient):
         if rejected:
             loop.call_soon_threadsafe(
                 self._fail_connect,
-                NarwalConnectionError(
-                    f"MQTT subscriptions rejected ({rejected[0]})"
-                ),
+                NarwalConnectionError(f"MQTT subscriptions rejected ({rejected[0]})"),
             )
             return
         loop.call_soon_threadsafe(self._mqtt_ready.set)
@@ -445,9 +491,7 @@ class NarwalCloudClient(NarwalClient):
             return
         raw = bytes(message.payload)
         if message.topic.endswith("/response"):
-            correlation = _correlation_id(
-                getattr(message.properties, "CorrelationData", None)
-            )
+            correlation = _correlation_id(getattr(message.properties, "CorrelationData", None))
             loop.call_soon_threadsafe(self._deliver_response, correlation, raw)
             return
         loop.call_soon_threadsafe(
@@ -502,9 +546,7 @@ class NarwalCloudClient(NarwalClient):
         try:
             _inner_url, payload = _decode_envelope(raw)
             fields = _protobuf_fields(payload)
-            duration = fields.get(
-                2, [_ACTIVE_PUBLISH_DEFAULT_DURATION_MS]
-            )[0]
+            duration = fields.get(2, [_ACTIVE_PUBLISH_DEFAULT_DURATION_MS])[0]
             if not isinstance(duration, int) or duration <= 0:
                 raise ValueError("invalid active-publish duration")
         except ValueError:
@@ -553,9 +595,7 @@ class NarwalCloudClient(NarwalClient):
         account = self._api.account
         if client is None or account is None or not self.connected:
             raise NarwalConnectionError("Not connected to the Narwal cloud")
-        request_topic = (
-            f"{self.topic_prefix}/{self.device_id}/{short_topic.lstrip('/')}"
-        )
+        request_topic = f"{self.topic_prefix}/{self.device_id}/{short_topic.lstrip('/')}"
         response_topic = f"{request_topic}/response"
         if response_topic not in self._response_topics:
             result, _mid = client.subscribe(
@@ -563,9 +603,7 @@ class NarwalCloudClient(NarwalClient):
                 options=mqtt.SubscribeOptions(qos=0),
             )
             if result != mqtt.MQTT_ERR_SUCCESS:
-                raise NarwalConnectionError(
-                    f"MQTT response subscription failed ({result})"
-                )
+                raise NarwalConnectionError(f"MQTT response subscription failed ({result})")
             self._response_topics.add(response_topic)
         message_id = str(uuid.uuid1())
         properties = mqtt.Properties(mqtt.PacketTypes.PUBLISH)

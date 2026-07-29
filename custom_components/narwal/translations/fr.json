@@ -60,7 +60,22 @@
         }
       },
       "task_record": {
-        "name": "Dernière tâche de nettoyage"
+        "name": "Historique des tâches de nettoyage"
+      },
+      "battery_health_details": {
+        "name": "Détails de santé de la batterie"
+      },
+      "dry_mop_remaining_time": {
+        "name": "Temps de séchage restant"
+      },
+      "dust_bag_health": {
+        "name": "État du sac à poussière"
+      },
+      "clean_timeline": {
+        "name": "Chronologie du nettoyage"
+      },
+      "clean_progress": {
+        "name": "Progression du nettoyage en temps réel"
       }
     },
     "binary_sensor": {
@@ -81,6 +96,9 @@
       },
       "empty_dustbin": {
         "name": "Vider le bac à poussière"
+      },
+      "start_clean_plan": {
+        "name": "Démarrer le plan sélectionné"
       }
     },
     "switch": {
@@ -125,6 +143,17 @@
           "strong": "Fort",
           "smart": "Intelligent"
         }
+      },
+      "clean_plan": {
+        "name": "Plan de nettoyage enregistré"
+      },
+      "map": {
+        "name": "Carte active"
+      }
+    },
+    "number": {
+      "volume": {
+        "name": "Volume"
       }
     }
   }

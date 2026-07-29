@@ -10,6 +10,9 @@ TOPIC_CMD_GET_FEATURE_LIST = "common/get_feature_list"
 TOPIC_CMD_GET_BASE_STATUS = "status/get_device_base_status"
 TOPIC_CMD_GET_CONFIG = "config/get"
 TOPIC_CMD_SET_CONFIG = "config/set"
+TOPIC_CMD_GET_BATTERY_INFO = "info/battery_info"
+TOPIC_CMD_GET_CLEAN_PROGRESS = "info/get_clean_progress_info"
+TOPIC_CMD_GET_CLEAN_TIMELINE = "info/get_clean_time_line"
 
 # Task control
 TOPIC_CMD_PAUSE = "task/pause"
@@ -23,6 +26,7 @@ TOPIC_CMD_WASH_MOP = "supply/wash_mop"
 TOPIC_CMD_DRY_MOP = "supply/dry_mop"
 TOPIC_CMD_WASH_AND_DRY_MOP = "supply/wash_and_dry_mop"
 TOPIC_CMD_DUST_GATHERING = "supply/dust_gathering"
+TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME = "supply/get_dry_mop_remain_time"
 
 # Cleaning (Pita protocol — correct for AX12)
 TOPIC_CMD_START_CLEAN = "clean/plan/start"  # whole-house clean (empty payload)
@@ -30,10 +34,16 @@ TOPIC_CMD_EASY_CLEAN = "clean/easy_clean/start"
 TOPIC_CMD_SET_FAN_LEVEL = "clean/set_fan_level"
 TOPIC_CMD_SET_MOP_HUMIDITY = "clean/set_mop_humidity"
 TOPIC_CMD_GET_CURRENT_TASK = "clean/current_clean_task/get"
+TOPIC_CMD_GET_CLEAN_PLANS = "clean/plan/get"
 
 # Map
 TOPIC_CMD_GET_MAP = "map/get_map"
 TOPIC_CMD_GET_ALL_MAPS = "map/get_all_reduced_maps"
+TOPIC_CMD_SWITCH_MAP = "map/switch_map"
+
+# Consumables
+TOPIC_CMD_GET_CONSUMABLE_INFO = "consumable/get_consumable_info"
+TOPIC_CMD_RESET_CONSUMABLE_INFO = "consumable/reset_consumable_info"
 
 # Camera (developer commands)
 TOPIC_CMD_TAKE_PICTURE = "developer/take_picture"
@@ -43,6 +53,34 @@ TOPIC_CMD_ACTIVE_ROBOT = "common/active_robot_publish"
 
 # Command response timeout
 COMMAND_RESPONSE_TIMEOUT = 5.0  # seconds
+
+# Cloud consumable type -> robot ConsumableInfoPayload enum.
+CONSUMABLE_MAINTAIN_TYPE_MAP: dict[int, int] = {
+    13: 1,
+    1: 2,
+    14: 4,
+    15: 6,
+    16: 7,
+    17: 8,
+    23: 9,
+    22: 10,
+}
+CONSUMABLE_REPLACE_TYPE_MAP: dict[int, int] = {
+    1: 1,
+    2: 2,
+    3: 3,
+    4: 4,
+    5: 5,
+    6: 6,
+    7: 7,
+    18: 8,
+    9: 20,
+    20: 21,
+    21: 21,
+    10: 22,
+    11: 23,
+    12: 24,
+}
 
 
 class CommandResult(IntEnum):
