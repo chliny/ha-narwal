@@ -35,6 +35,18 @@
       "already_configured": "This robot is already configured."
     }
   },
+  "selector": {
+    "clean_plan": {
+      "options": {
+        "customization": "Customization",
+        "freo_mind": "Freo Mind",
+        "vacuum": "Vacuum",
+        "mop": "Mop",
+        "vacuum_and_mop": "Vacuum and mop",
+        "vacuum_then_mop": "Vacuum then mop"
+      }
+    }
+  },
   "entity": {
     "vacuum": {
       "vacuum": {

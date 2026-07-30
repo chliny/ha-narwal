@@ -6,8 +6,10 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.translation import async_get_translations
 
 from . import NarwalConfigEntry
+from .const import DOMAIN
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .narwal_client import CustomCleanStrategy, DryMopStrength, MopHumidity
@@ -28,6 +30,15 @@ CLEAN_STRATEGY_OPTIONS: dict[str, CustomCleanStrategy] = {
     "smart": CustomCleanStrategy.SMART,
 }
 
+CLEAN_PLAN_MODE_TRANSLATION_KEYS: dict[int, str] = {
+    0: "customization",
+    1: "freo_mind",
+    2: "vacuum",
+    3: "mop",
+    4: "vacuum_and_mop",
+    5: "vacuum_then_mop",
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -35,8 +46,10 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Narwal cleaning preference selects."""
-    del hass
     coordinator = entry.runtime_data
+    translations = await async_get_translations(
+        hass, hass.config.language, "selector", {DOMAIN}
+    )
     known: set[str] = set()
 
     def _add_supported() -> None:
@@ -48,7 +61,12 @@ async def async_setup_entry(
         if coordinator.supports_dry_mop_strength:
             entities.append(("dry_mop_strength", NarwalDryMopStrengthSelect(coordinator)))
         if coordinator.data and coordinator.data.clean_plans:
-            entities.append(("clean_plan", NarwalCleanPlanSelect(coordinator)))
+            entities.append(
+                (
+                    "clean_plan",
+                    NarwalCleanPlanSelect(coordinator, translations),
+                )
+            )
         if (
             coordinator.data
             and coordinator.data.saved_maps_supported
@@ -201,11 +219,34 @@ def _named_options(values: list[dict[str, object]], id_key: str = "id") -> dict[
     """Build stable, unique select labels from app-provided names."""
     result: dict[str, int] = {}
     for value in values:
-        item_id = int(value[id_key])
+        item_id = int(str(value.get(id_key) or 0))
         name = str(value.get("name") or item_id)
         label = name if name not in result else f"{name} ({item_id})"
         result[label] = item_id
     return result
+
+
+def _clean_plan_options(
+    values: list[dict[str, object]], translations: dict[str, str]
+) -> dict[str, int]:
+    """Build plan options using translated names when no custom name exists."""
+    named_values = []
+    for value in values:
+        plan = dict(value)
+        if not plan.get("name"):
+            clean_mode_value = plan.get("clean_mode")
+            clean_mode = int(str(clean_mode_value if clean_mode_value is not None else -1))
+            translation_key = CLEAN_PLAN_MODE_TRANSLATION_KEYS.get(clean_mode)
+            translated_name = (
+                translations.get(
+                    f"component.{DOMAIN}.selector.clean_plan.options.{translation_key}"
+                )
+                if translation_key
+                else None
+            )
+            plan["name"] = translated_name or f"Cleaning plan {plan['id']}"
+        named_values.append(plan)
+    return _named_options(named_values)
 
 
 class NarwalCleanPlanSelect(NarwalEntity, SelectEntity):
@@ -214,14 +255,17 @@ class NarwalCleanPlanSelect(NarwalEntity, SelectEntity):
     _attr_translation_key = "clean_plan"
     _attr_icon = "mdi:calendar-check"
 
-    def __init__(self, coordinator: NarwalCoordinator) -> None:
+    def __init__(
+        self, coordinator: NarwalCoordinator, translations: dict[str, str]
+    ) -> None:
         super().__init__(coordinator)
         self._set_entity_identity("select", "clean_plan")
+        self._translations = translations
 
     @property
     def _option_map(self) -> dict[str, int]:
         state = self.coordinator.data
-        return _named_options(state.clean_plans) if state else {}
+        return _clean_plan_options(state.clean_plans, self._translations) if state else {}
 
     @property
     def options(self) -> list[str]:

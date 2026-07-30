@@ -35,6 +35,18 @@
       "already_configured": "该机器人已配置。"
     }
   },
+  "selector": {
+    "clean_plan": {
+      "options": {
+        "customization": "自定义",
+        "freo_mind": "鲸灵托管",
+        "vacuum": "扫地",
+        "mop": "拖地",
+        "vacuum_and_mop": "扫拖同时",
+        "vacuum_then_mop": "先扫后拖"
+      }
+    }
+  },
   "entity": {
     "vacuum": {
       "vacuum": {

@@ -630,7 +630,10 @@ class NarwalClient:
                     "map_id": self._as_int(value.get("2")),
                     "clean_mode": self._as_int(value.get("3")),
                     "is_custom": bool(self._as_int(value.get("4")) or 0),
-                    "name": self._as_text(value.get("5")) or f"Plan {plan_id}",
+                    # The app only uses customName when it is non-empty. Its
+                    # fallback is the localized CleanMode name, which is
+                    # applied by the HA select entity.
+                    "name": self._as_text(value.get("5")),
                     "shown_in_station": bool(self._as_int(value.get("6")) or 0),
                     "perform_times": self._as_int(value.get("7")),
                     "order": self._as_int(value.get("8")),
