@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -39,6 +40,33 @@ POLL_INTERVAL = timedelta(seconds=60)
 # Fast re-poll when state is incomplete (robot asleep at startup)
 FAST_POLL_INTERVAL = timedelta(seconds=10)
 FAST_POLL_MAX = 6  # up to 60s of fast polling before falling back to normal
+FIRMWARE_REFRESH_INTERVAL = 60 * 60
+
+APP_LANGUAGE_CODES = {
+    "de": "de-DE",
+    "en": "en-US",
+    "es": "es-ES",
+    "fr": "fr-FR",
+    "he": "he-IL",
+    "it": "it-IT",
+    "ja": "ja-JP",
+    "ko": "ko-KR",
+    "pl": "pl-PL",
+    "ru": "ru-RU",
+    "th": "th-TH",
+    "tr": "tr-TR",
+    "vi": "vi-VN",
+}
+
+
+def _app_language_code(language: str) -> str:
+    """Map a Home Assistant locale to one of the APK's language tags."""
+    normalized = language.replace("_", "-")
+    if normalized.lower() in {"zh-hant", "zh-tw", "zh-hk"}:
+        return "zh-TW"
+    if normalized.lower().startswith("zh"):
+        return "zh-CN"
+    return APP_LANGUAGE_CODES.get(normalized.split("-", 1)[0].lower(), "en-US")
 
 
 class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
@@ -76,6 +104,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._feature_discovery_complete = False
         self._config_discovery_complete = False
         self._extended_refresh_count = 0
+        self._last_firmware_refresh = 0.0
         self.selected_clean_plan_id: int | None = None
 
     @property
@@ -158,7 +187,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             _LOGGER.debug("Could not fetch initial map")
 
         await self._async_refresh_extended_state(include_static=True)
-        await self._async_refresh_cloud_metadata()
+        await self._async_refresh_cloud_metadata(task_record_pages=3)
+        await self._async_refresh_firmware_update()
 
         # Subscribe to broadcast topics (display_map, working_status, etc.)
         # Must be sent before listener starts so display_map flows during cleaning.
@@ -195,10 +225,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 int(FAST_POLL_INTERVAL.total_seconds()),
             )
 
-    async def _async_refresh_cloud_metadata(self) -> None:
+    async def _async_refresh_cloud_metadata(
+        self,
+        *,
+        task_record_pages: int = 1,
+    ) -> None:
         """Refresh optional account data without affecting robot control."""
         try:
-            await self.client.get_cloud_metadata()
+            await self.client.get_cloud_metadata(
+                task_record_pages=task_record_pages,
+            )
         except NarwalAuthenticationError:
             _LOGGER.warning("Narwal cloud credentials require reauthentication")
             self.config_entry.async_start_reauth(self.hass)
@@ -208,9 +244,32 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 exc_info=True,
             )
 
+    async def _async_refresh_firmware_update(self) -> None:
+        """Refresh the read-only cloud firmware availability state."""
+        try:
+            await self.client.get_firmware_update()
+        except NarwalAuthenticationError:
+            _LOGGER.warning("Narwal cloud credentials require reauthentication")
+            self.config_entry.async_start_reauth(self.hass)
+        except Exception:
+            _LOGGER.debug(
+                "Could not refresh Narwal firmware availability",
+                exc_info=True,
+            )
+        finally:
+            self._last_firmware_refresh = time.monotonic()
+
+    async def _async_maybe_refresh_firmware_update(self) -> None:
+        """Refresh firmware availability no more than once per hour."""
+        if (
+            time.monotonic() - self._last_firmware_refresh
+            >= FIRMWARE_REFRESH_INTERVAL
+        ):
+            await self._async_refresh_firmware_update()
+
     async def _async_refresh_extended_state(self, *, include_static: bool) -> None:
         """Probe and refresh optional robot-side APK protocol features."""
-        calls = [
+        calls: list[Callable[[], Awaitable[object]]] = [
             self.client.get_dry_mop_remaining_time,
             self.client.get_clean_progress,
             self.client.get_clean_timeline,
@@ -222,6 +281,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                     self.client.get_consumable_info,
                     self.client.get_clean_plans,
                     self.client.get_all_maps,
+                    self.client.get_current_voice_info,
                 )
             )
         for call in calls:
@@ -231,6 +291,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 _LOGGER.debug(
                     "Optional Narwal feature query %s is unsupported or unavailable",
                     call.__name__,
+                )
+        if include_static and self.client.state.current_voice.get("language"):
+            try:
+                await self.client.get_voice_packs(
+                    _app_language_code(self.hass.config.language)
+                )
+            except Exception:
+                _LOGGER.debug(
+                    "Optional Narwal voice-package catalog is unavailable",
+                    exc_info=True,
                 )
 
     async def _async_listen(self) -> None:
@@ -333,6 +403,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         except Exception as err:
             self._consecutive_failures += 1
             await self._async_refresh_cloud_metadata()
+            await self._async_maybe_refresh_firmware_update()
             if self._consecutive_failures >= self._max_failures:
                 raise UpdateFailed(
                     f"Vacuum unreachable for {self._consecutive_failures} consecutive polls"
@@ -356,8 +427,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 self.device_config = await self.client.get_config()
                 self._config_discovery_complete = True
 
-        await self._async_refresh_cloud_metadata()
         self._extended_refresh_count += 1
+        await self._async_refresh_cloud_metadata(
+            task_record_pages=(3 if self._extended_refresh_count % 30 == 0 else 1),
+        )
+        await self._async_maybe_refresh_firmware_update()
         await self._async_refresh_extended_state(
             include_static=self._extended_refresh_count % 5 == 0
         )

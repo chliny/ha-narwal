@@ -48,6 +48,11 @@
     }
   },
   "entity": {
+    "update": {
+      "firmware": {
+        "name": "固件"
+      }
+    },
     "vacuum": {
       "vacuum": {
         "name": "扫拖机器人"
@@ -116,7 +121,29 @@
     "switch": {
       "wash_and_dry_mop": {
         "name": "清洗并烘干拖布"
-      }
+      },
+      "high_altitude_mode": {"name": "高原模式"},
+      "automatic_detergent": {"name": "自动添加清洁剂"},
+      "child_lock": {"name": "童锁"},
+      "carpet_cleaning": {"name": "地毯清洁"},
+      "boost_crossing": {"name": "强力越障"},
+      "smart_dirt_detection": {"name": "智能脏污检测"},
+      "custom_carpet_cleaning": {"name": "自定义地毯清洁"},
+      "return_to_main_map": {"name": "临时地图清洁后切回主地图"},
+      "pet_mode": {"name": "宠物模式"},
+      "smart_deep_cleaning": {"name": "智能深度清洁"},
+      "moisture_proof_pad": {"name": "拖布防潮保护"},
+      "automatic_dust_collection": {"name": "自动集尘"},
+      "smart_dust_collection": {"name": "智能集尘"},
+      "quiet_dust_collection": {"name": "静音集尘"},
+      "dry_robot_dust_bag": {"name": "烘干机器人尘袋"},
+      "hot_water_mop_washing": {"name": "热水洗拖布"},
+      "heavy_dirt_deep_cleaning": {"name": "重污深度清洁"},
+      "voice_control": {"name": "语音控制"},
+      "ai_voice_effects": {"name": "AI 语音音效"},
+      "waiting_voice_effects": {"name": "等待时语音音效"},
+      "dust_sensor_detection": {"name": "尘污传感器检测"},
+      "valuable_item_guard": {"name": "贵重物品保护"}
     },
     "event": {
       "notification": {
@@ -161,6 +188,9 @@
       },
       "map": {
         "name": "当前地图"
+      },
+      "voice_pack": {
+        "name": "语音包"
       }
     },
     "number": {

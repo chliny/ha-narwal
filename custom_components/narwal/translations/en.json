@@ -48,6 +48,11 @@
     }
   },
   "entity": {
+    "update": {
+      "firmware": {
+        "name": "Firmware"
+      }
+    },
     "vacuum": {
       "vacuum": {
         "name": "Vacuum"
@@ -116,7 +121,29 @@
     "switch": {
       "wash_and_dry_mop": {
         "name": "Wash and dry mop pads"
-      }
+      },
+      "high_altitude_mode": {"name": "High altitude mode"},
+      "automatic_detergent": {"name": "Automatic detergent dispensing"},
+      "child_lock": {"name": "Child lock"},
+      "carpet_cleaning": {"name": "Carpet cleaning"},
+      "boost_crossing": {"name": "Obstacle crossing boost"},
+      "smart_dirt_detection": {"name": "Smart dirt detection"},
+      "custom_carpet_cleaning": {"name": "Custom carpet cleaning"},
+      "return_to_main_map": {"name": "Return to main map after temporary cleaning"},
+      "pet_mode": {"name": "Pet mode"},
+      "smart_deep_cleaning": {"name": "Smart deep cleaning"},
+      "moisture_proof_pad": {"name": "Moisture-proof mop pad protection"},
+      "automatic_dust_collection": {"name": "Automatic dust collection"},
+      "smart_dust_collection": {"name": "Smart dust collection"},
+      "quiet_dust_collection": {"name": "Quiet dust collection"},
+      "dry_robot_dust_bag": {"name": "Dry robot dust bag"},
+      "hot_water_mop_washing": {"name": "Hot-water mop washing"},
+      "heavy_dirt_deep_cleaning": {"name": "Heavy-dirt deep cleaning"},
+      "voice_control": {"name": "Voice control"},
+      "ai_voice_effects": {"name": "AI voice effects"},
+      "waiting_voice_effects": {"name": "Waiting voice effects"},
+      "dust_sensor_detection": {"name": "Dust sensor dirt detection"},
+      "valuable_item_guard": {"name": "Valuable item guard"}
     },
     "event": {
       "notification": {
@@ -161,6 +188,9 @@
       },
       "map": {
         "name": "Active map"
+      },
+      "voice_pack": {
+        "name": "Voice package"
       }
     },
     "number": {

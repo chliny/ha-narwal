@@ -8,6 +8,7 @@ import logging
 import ssl
 import time
 import uuid
+from typing import Any
 from urllib.parse import urlparse
 
 import paho.mqtt.client as mqtt
@@ -33,6 +34,7 @@ _LOGGER = logging.getLogger(__name__)
 _CLOUD_REACHABILITY_TIMEOUT = 150.0
 _ACTIVE_PUBLISH_TIMEOUTS = (2, 2, 4, 4, 8, 8, 16, 16, 32, 60)
 _ACTIVE_PUBLISH_DEFAULT_DURATION_MS = 60_000
+_TASK_RECORD_CACHE_LIMIT = 60
 
 _COMMON_THEMES = (
     "status/robot_base_status",
@@ -167,6 +169,38 @@ async def _async_configure_tls(client: mqtt.Client) -> None:
     await asyncio.to_thread(client.tls_set, cert_reqs=ssl.CERT_REQUIRED)
 
 
+def _task_record_id(record: dict[str, Any]) -> str | None:
+    """Return the stable identifier shared by task-record response variants."""
+    value = (
+        record.get("clean_record_id")
+        or record.get("record_id")
+        or record.get("report_id")
+        or record.get("id")
+    )
+    return str(value) if value is not None else None
+
+
+def _merge_task_records(
+    fresh: list[dict[str, Any]],
+    cached: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Merge the newest page with the bounded multi-page cache."""
+    merged: list[dict[str, Any]] = []
+    known_ids: set[str] = set()
+    for record in (*fresh, *cached):
+        record_id = _task_record_id(record)
+        if record_id is not None:
+            if record_id in known_ids:
+                continue
+            known_ids.add(record_id)
+        merged.append(record)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
 class NarwalCloudClient(NarwalClient):
     """Narwal client using the app's cloud MQTT5 transport."""
 
@@ -217,11 +251,15 @@ class NarwalCloudClient(NarwalClient):
             and self.last_broadcast_age <= _CLOUD_REACHABILITY_TIMEOUT
         )
 
-    async def get_cloud_metadata(self) -> None:
+    async def get_cloud_metadata(self, *, task_record_pages: int = 1) -> None:
         """Refresh consumable lifetimes and device notifications."""
         device = self.cloud_device
         if device is None:
             raise NarwalConnectionError("Cloud device metadata is unavailable")
+        task_records_map_id = self.state.current_map_id
+        if task_records_map_id != self.state.task_records_map_id:
+            # Populate multiple pages immediately after setup or a map switch.
+            task_record_pages = max(task_record_pages, 3)
         consumables, notifications, task_records, dust_bag_health = await asyncio.gather(
             self._api.consumables(
                 device_id=device.device_id,
@@ -234,6 +272,9 @@ class NarwalCloudClient(NarwalClient):
             self._api.task_records(
                 device_id=device.device_id,
                 product_id=device.product_id,
+                map_id=task_records_map_id,
+                pages=task_record_pages,
+                record_limit=_TASK_RECORD_CACHE_LIMIT,
             ),
             self._api.dust_bag_health(
                 device_id=device.device_id,
@@ -263,11 +304,25 @@ class NarwalCloudClient(NarwalClient):
             _LOGGER.debug("Narwal task record refresh failed: %s", task_records)
         else:
             self.state.task_records_supported = True
-            self.state.task_records = task_records
-            self.state.latest_task_record = task_records[0] if task_records else None
+            cached_records = (
+                self.state.task_records
+                if (
+                    task_record_pages == 1 and self.state.task_records_map_id == task_records_map_id
+                )
+                else []
+            )
+            self.state.task_records = _merge_task_records(
+                task_records,
+                cached_records,
+                limit=_TASK_RECORD_CACHE_LIMIT,
+            )
+            self.state.task_records_map_id = task_records_map_id
+            self.state.latest_task_record = (
+                self.state.task_records[0] if self.state.task_records else None
+            )
             self.state.task_record_details = await self._get_task_record_details(
                 device,
-                task_records[:5],
+                self.state.task_records[:5],
                 self.state.task_record_details,
             )
         if isinstance(dust_bag_health, BaseException):
@@ -280,6 +335,44 @@ class NarwalCloudClient(NarwalClient):
             raise NarwalAuthenticationError("Narwal cloud credentials were rejected")
         if len(errors) == 4:
             raise NarwalConnectionError("Cannot refresh Narwal cloud metadata") from errors[0]
+
+    async def get_firmware_update(self) -> None:
+        """Refresh firmware availability without exposing an OTA action."""
+        device = self.cloud_device
+        firmware_version = self.state.firmware_version or (
+            device.firmware_version if device else ""
+        )
+        if device is None or not firmware_version:
+            return
+        try:
+            info = await self._api.firmware_update(
+                device_id=device.device_id,
+                product_id=device.product_id,
+                firmware_version=firmware_version,
+            )
+        except NarwalCloudAuthError as err:
+            raise NarwalAuthenticationError("Narwal cloud credentials were rejected") from err
+        except NarwalCloudError as err:
+            raise NarwalConnectionError("Cannot refresh Narwal firmware availability") from err
+        latest_version = str(info.get("latest_version") or firmware_version).strip()
+        self.state.firmware_target = latest_version
+        self.state.firmware_update_info = info
+        self.state.firmware_update_supported = True
+
+    async def get_voice_packs(self, app_language_code: str = "zh-CN") -> None:
+        """Refresh the official voice-pack catalog for the active language."""
+        device = self.cloud_device
+        language = self.state.current_voice.get("language", "")
+        if device is None or not language:
+            return
+        packs = await self._api.voice_packs(
+            device_id=device.device_id,
+            product_id=device.product_id,
+            device_language_code=language,
+            app_language_code=app_language_code,
+        )
+        self.state.voice_packs = packs
+        self.state.voice_packs_supported = bool(packs)
 
     async def _get_task_record_details(
         self,

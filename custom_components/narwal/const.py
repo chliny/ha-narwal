@@ -43,6 +43,7 @@ PLATFORMS: list[Platform] = [
     Platform.SELECT,
     Platform.EVENT,
     Platform.NUMBER,
+    Platform.UPDATE,
 ]
 
 FAN_SPEED_MAP: dict[str, FanLevel] = {

@@ -6,7 +6,6 @@ Android app 2.6.90.  Callers must never log request bodies or response tokens.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -115,6 +114,7 @@ class NarwalCloudApi:
         params: dict[str, str] | None = None,
         device_id: str = "",
         product_id: str = "",
+        accepted_codes: frozenset[str] = frozenset({"0"}),
     ) -> Any:
         try:
             async with self._session.request(
@@ -140,7 +140,7 @@ class NarwalCloudApi:
         if not isinstance(body, dict):
             raise NarwalCloudError("Narwal cloud returned an invalid response")
         code = body.get("code")
-        if code not in (0, "0"):
+        if str(code) not in accepted_codes:
             if path.endswith("/loginByPw") or str(code) in {"401", "403"}:
                 raise NarwalCloudAuthError("Narwal cloud rejected authentication")
             raise NarwalCloudError(f"Narwal cloud rejected request (code={code})")
@@ -323,37 +323,126 @@ class NarwalCloudApi:
         *,
         device_id: str,
         product_id: str,
-        days: int = 30,
+        map_id: int | None = None,
+        pages: int = 1,
+        record_limit: int = 60,
     ) -> list[dict[str, Any]]:
-        """Return the app's cleaning-task history list."""
+        """Return a bounded cleaning-task history list.
+
+        The APK's all-record requester has no query parameters. Its by-map
+        requester is the only variant that exposes ``page`` and is therefore
+        used when the active map is known.
+        """
         if self.account is None:
             await self.login()
-        end_time = int(time.time() * 1000)
+
+        if map_id is None:
+            return await self._all_task_records(
+                device_id=device_id,
+                product_id=product_id,
+                record_limit=record_limit,
+            )
+
+        records: list[dict[str, Any]] = []
+        known_ids: set[str] = set()
+        previous_page_ids: tuple[str, ...] = ()
+        for page in range(1, min(max(pages, 1), 5) + 1):
+            try:
+                result = await self._request(
+                    "GET",
+                    "/sweeper-map-scheme-app-server/v1/work_record/listByMap",
+                    params={
+                        "page": str(page),
+                        # WorkRecordTabType.all has enum index 1 in APK 2.6.90.
+                        "type": "1",
+                        "status": "0",
+                        "deviceId": device_id,
+                        "productId": product_id,
+                        "map_id": str(map_id),
+                    },
+                    device_id=device_id,
+                    product_id=product_id,
+                )
+            except NarwalCloudAuthError:
+                raise
+            except NarwalCloudError:
+                if page == 1:
+                    return await self._all_task_records(
+                        device_id=device_id,
+                        product_id=product_id,
+                        record_limit=record_limit,
+                    )
+                break
+            values = _task_record_values(result)
+            if not values:
+                break
+            page_ids = tuple(
+                record_id for value in values if (record_id := _task_record_id(value)) is not None
+            )
+            # Some older backends ignore ``page``. Avoid retaining the same
+            # page repeatedly if such a device reaches this endpoint.
+            if page_ids and page_ids == previous_page_ids:
+                break
+            previous_page_ids = page_ids
+            for value in values:
+                record_id = _task_record_id(value)
+                if record_id is not None:
+                    if record_id in known_ids:
+                        continue
+                    known_ids.add(record_id)
+                records.append(value)
+                if len(records) >= record_limit:
+                    return records
+        return records
+
+    async def _all_task_records(
+        self,
+        *,
+        device_id: str,
+        product_id: str,
+        record_limit: int,
+    ) -> list[dict[str, Any]]:
+        """Return the APK's unpaged all-map record list."""
         result = await self._request(
             "GET",
             "/sweeper-map-scheme-app-server/v2/work_record/all",
-            params={
-                "device_id": device_id,
-                "product_id": product_id,
-                "start_time": str(end_time - days * 86_400_000),
-                "end_time": str(end_time),
-            },
             device_id=device_id,
             product_id=product_id,
         )
-        if isinstance(result, list):
-            return [item for item in result if isinstance(item, dict)]
-        if isinstance(result, dict):
-            values = next(
-                (
-                    result[key]
-                    for key in ("record_list", "work_record_list", "list", "records")
-                    if isinstance(result.get(key), list)
-                ),
-                [],
-            )
-            return [item for item in values if isinstance(item, dict)]
-        return []
+        return _task_record_values(result)[:record_limit]
+
+    async def firmware_update(
+        self,
+        *,
+        device_id: str,
+        product_id: str,
+        firmware_version: str,
+    ) -> dict[str, Any]:
+        """Return the APK's read-only firmware update description."""
+        if self.account is None:
+            await self.login()
+        result = await self._request(
+            "GET",
+            "/app-ota-server/v1/firmware/current/version/describe",
+            params={
+                "productId": product_id,
+                "deviceId": device_id,
+                "firmwareVersion": firmware_version,
+            },
+            device_id=device_id,
+            product_id=product_id,
+            # The app accepts both business codes for this response model.
+            accepted_codes=frozenset({"0", "400"}),
+        )
+        if not isinstance(result, dict):
+            raise NarwalCloudError("Firmware update response did not contain a description")
+        return {
+            "describe": str(result.get("describe") or ""),
+            "state": _as_optional_int(result.get("state")),
+            "latest_version": str(result.get("upgrade_firmware_version") or ""),
+            "force_upgrade": _as_bool(result.get("force_upgrade")),
+            "guide_upgrade": _as_bool(result.get("guide_upgrade")),
+        }
 
     async def task_record_detail(
         self,
@@ -407,6 +496,48 @@ class NarwalCloudApi:
         )
         return [item for item in values if isinstance(item, dict)]
 
+    async def voice_packs(
+        self,
+        *,
+        device_id: str,
+        product_id: str,
+        device_language_code: str,
+        app_language_code: str = "zh-CN",
+    ) -> list[dict[str, str]]:
+        """Return voice packages using the same query as the Android app."""
+        if self.account is None:
+            await self.login()
+        result = await self._request(
+            "GET",
+            "/business-sweeper-app-platform-server/v1/special/voice/getListByParams",
+            params={
+                "productId": product_id,
+                "deviceLanguageCode": device_language_code,
+                "appLanguageCode": app_language_code,
+            },
+            device_id=device_id,
+            product_id=product_id,
+            # VoiceService accepts both response codes in APK 2.6.90.
+            accepted_codes=frozenset({"0", "400"}),
+        )
+        values = result.get("list", []) if isinstance(result, dict) else result
+        if not isinstance(values, list):
+            return []
+        keys = (
+            "name",
+            "resource_id",
+            "description",
+            "version",
+            "audition_video_url",
+            "official_video_url",
+            "image_url",
+        )
+        return [
+            {key: str(value.get(key) or "") for key in keys}
+            for value in values
+            if isinstance(value, dict) and value.get("resource_id")
+        ]
+
 
 def _as_int(value: Any) -> int:
     """Convert a loosely typed cloud field to an integer."""
@@ -414,3 +545,50 @@ def _as_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _as_optional_int(value: Any) -> int | None:
+    """Convert a loosely typed cloud field to an optional integer."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_bool(value: Any) -> bool:
+    """Convert the cloud's bool/int/string variants to a boolean."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    return bool(value)
+
+
+def _task_record_values(result: Any) -> list[dict[str, Any]]:
+    """Extract a work-record list from response variants used by the backend."""
+    if isinstance(result, list):
+        return [item for item in result if isinstance(item, dict)]
+    if not isinstance(result, dict):
+        return []
+    values: list[Any] = next(
+        (
+            result[key]
+            for key in ("record_list", "work_record_list", "list", "records")
+            if isinstance(result.get(key), list)
+        ),
+        [],
+    )
+    return [item for item in values if isinstance(item, dict)]
+
+
+def _task_record_id(record: dict[str, Any]) -> str | None:
+    """Return the stable identifier shared by record list variants."""
+    value = (
+        record.get("clean_record_id")
+        or record.get("record_id")
+        or record.get("report_id")
+        or record.get("id")
+    )
+    return str(value) if value is not None else None

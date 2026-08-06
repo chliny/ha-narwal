@@ -48,6 +48,11 @@
     }
   },
   "entity": {
+    "update": {
+      "firmware": {
+        "name": "Firmware"
+      }
+    },
     "vacuum": {
       "vacuum": {
         "name": "Aspirateur"
@@ -116,7 +121,29 @@
     "switch": {
       "wash_and_dry_mop": {
         "name": "Laver et sécher les serpillières"
-      }
+      },
+      "high_altitude_mode": {"name": "Mode haute altitude"},
+      "automatic_detergent": {"name": "Distribution automatique de détergent"},
+      "child_lock": {"name": "Verrouillage enfant"},
+      "carpet_cleaning": {"name": "Nettoyage des tapis"},
+      "boost_crossing": {"name": "Franchissement renforcé"},
+      "smart_dirt_detection": {"name": "Détection intelligente de saleté"},
+      "custom_carpet_cleaning": {"name": "Nettoyage personnalisé des tapis"},
+      "return_to_main_map": {"name": "Retour à la carte principale"},
+      "pet_mode": {"name": "Mode animaux"},
+      "smart_deep_cleaning": {"name": "Nettoyage en profondeur intelligent"},
+      "moisture_proof_pad": {"name": "Protection anti-humidité des serpillières"},
+      "automatic_dust_collection": {"name": "Collecte automatique de poussière"},
+      "smart_dust_collection": {"name": "Collecte intelligente de poussière"},
+      "quiet_dust_collection": {"name": "Collecte silencieuse de poussière"},
+      "dry_robot_dust_bag": {"name": "Séchage du sac à poussière du robot"},
+      "hot_water_mop_washing": {"name": "Lavage des serpillières à l’eau chaude"},
+      "heavy_dirt_deep_cleaning": {"name": "Nettoyage en profondeur des saletés tenaces"},
+      "voice_control": {"name": "Commande vocale"},
+      "ai_voice_effects": {"name": "Effets vocaux IA"},
+      "waiting_voice_effects": {"name": "Effets vocaux pendant l’attente"},
+      "dust_sensor_detection": {"name": "Détection de saleté par capteur"},
+      "valuable_item_guard": {"name": "Protection des objets précieux"}
     },
     "event": {
       "notification": {
@@ -161,6 +188,9 @@
       },
       "map": {
         "name": "Carte active"
+      },
+      "voice_pack": {
+        "name": "Pack vocal"
       }
     },
     "number": {

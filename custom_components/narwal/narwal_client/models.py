@@ -566,6 +566,8 @@ class NarwalState:
     battery_health: int = 0  # static design capacity from field 38 (always 100)
     firmware_version: str = ""
     firmware_target: str = ""
+    firmware_update_info: dict[str, Any] = field(default_factory=dict)
+    firmware_update_supported: bool = False
 
     # Device identity
     device_info: DeviceInfo | None = None
@@ -577,6 +579,7 @@ class NarwalState:
     task_records: list[dict[str, Any]] = field(default_factory=list)
     task_record_details: dict[str, dict[str, Any]] = field(default_factory=dict)
     task_records_supported: bool = False
+    task_records_map_id: int | None = None
     dust_bag_health: list[dict[str, Any]] = field(default_factory=list)
     dust_bag_health_supported: bool = False
 
@@ -598,6 +601,9 @@ class NarwalState:
     clean_timeline_supported: bool = False
     clean_progress: dict[str, Any] = field(default_factory=dict)
     clean_progress_supported: bool = False
+    current_voice: dict[str, str] = field(default_factory=dict)
+    voice_packs: list[dict[str, Any]] = field(default_factory=list)
+    voice_packs_supported: bool = False
 
     # Session
     session_id: str = ""

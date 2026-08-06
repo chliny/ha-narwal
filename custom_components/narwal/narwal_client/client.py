@@ -24,6 +24,7 @@ from .const import (
     TOPIC_CMD_GET_CONFIG,
     TOPIC_CMD_GET_CONSUMABLE_INFO,
     TOPIC_CMD_GET_CURRENT_TASK,
+    TOPIC_CMD_GET_CURRENT_VOICE_INFO,
     TOPIC_CMD_GET_DEVICE_INFO,
     TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME,
     TOPIC_CMD_GET_FEATURE_LIST,
@@ -33,6 +34,7 @@ from .const import (
     TOPIC_CMD_RESET_CONSUMABLE_INFO,
     TOPIC_CMD_RESUME,
     TOPIC_CMD_SET_CONFIG,
+    TOPIC_CMD_SET_CUSTOM_VOICE,
     TOPIC_CMD_SET_FAN_LEVEL,
     TOPIC_CMD_SET_LED,
     TOPIC_CMD_SET_MOP_HUMIDITY,
@@ -453,6 +455,49 @@ class NarwalClient:
             TOPIC_CMD_SET_CONFIG,
             self._encode_varint_field(1, max(0, min(100, int(percentage)))),
         )
+
+    async def set_boolean_config(
+        self, set_field: int, enabled: bool
+    ) -> CommandResponse:
+        """Set one boolean SetConfig field recovered from the Android app."""
+        return await self.send_command(
+            TOPIC_CMD_SET_CONFIG,
+            self._encode_varint_field(set_field, int(enabled)),
+        )
+
+    async def get_current_voice_info(self) -> dict[str, str]:
+        """Read the active custom voice package metadata."""
+        response = await self.send_command(TOPIC_CMD_GET_CURRENT_VOICE_INFO)
+        raw = response.data.get("2")
+        if not isinstance(raw, dict):
+            return {}
+
+        def _text(value: Any) -> str:
+            return (
+                value.decode("utf-8", errors="replace")
+                if isinstance(value, bytes)
+                else str(value or "")
+            )
+
+        voice = {
+            "language": _text(raw.get("1")),
+            "version": _text(raw.get("2")),
+            "description": _text(raw.get("3")),
+            "resource_id": _text(raw.get("4")),
+        }
+        self.state.current_voice = voice
+        return voice
+
+    async def set_custom_voice(
+        self, *, language: str, resource_id: str, version: str
+    ) -> CommandResponse:
+        """Select a cloud voice package using the app's exact MQTT fields."""
+        payload = (
+            self._encode_bytes_field(1, language.encode())
+            + self._encode_bytes_field(2, resource_id.encode())
+            + self._encode_bytes_field(3, version.encode())
+        )
+        return await self.send_command(TOPIC_CMD_SET_CUSTOM_VOICE, payload)
 
     async def set_custom_clean_strategy(
         self,

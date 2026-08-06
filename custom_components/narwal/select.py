@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.components.select import SelectEntity
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -29,7 +30,6 @@ CLEAN_STRATEGY_OPTIONS: dict[str, CustomCleanStrategy] = {
     "room": CustomCleanStrategy.ROOM,
     "smart": CustomCleanStrategy.SMART,
 }
-
 CLEAN_PLAN_MODE_TRANSLATION_KEYS: dict[int, str] = {
     0: "customization",
     1: "freo_mind",
@@ -73,6 +73,12 @@ async def async_setup_entry(
             and len(coordinator.data.saved_maps) > 1
         ):
             entities.append(("map", NarwalMapSelect(coordinator)))
+        if (
+            coordinator.data
+            and coordinator.data.voice_packs_supported
+            and coordinator.data.voice_packs
+        ):
+            entities.append(("voice_pack", NarwalVoicePackSelect(coordinator)))
         new = [entity for key, entity in entities if key not in known]
         known.update(key for key, _entity in entities)
         if new:
@@ -333,4 +339,74 @@ class NarwalMapSelect(NarwalEntity, SelectEntity):
             )
         await self.coordinator.client.get_map()
         await self.coordinator.client.get_all_maps()
+        self.coordinator.async_set_updated_data(self.coordinator.client.state)
+
+
+class NarwalVoicePackSelect(NarwalEntity, SelectEntity):
+    """Select an official voice package returned by the Narwal cloud."""
+
+    _attr_translation_key = "voice_pack"
+    _attr_icon = "mdi:account-voice"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("select", "voice_pack")
+
+    @property
+    def _option_map(self) -> dict[str, dict[str, str]]:
+        result: dict[str, dict[str, str]] = {}
+        for value in self.coordinator.client.state.voice_packs:
+            resource_id = str(value.get("resource_id") or "")
+            if not resource_id:
+                continue
+            name = str(value.get("name") or resource_id)
+            label = name if name not in result else f"{name} ({resource_id})"
+            result[label] = {key: str(item or "") for key, item in value.items()}
+        return result
+
+    @property
+    def options(self) -> list[str]:
+        return list(self._option_map)
+
+    @property
+    def current_option(self) -> str | None:
+        current = self.coordinator.client.state.current_voice.get("resource_id")
+        return next(
+            (
+                option
+                for option, value in self._option_map.items()
+                if value["resource_id"] == current
+            ),
+            None,
+        )
+
+    async def async_select_option(self, option: str) -> None:
+        pack = self._option_map.get(option)
+        if pack is None:
+            raise HomeAssistantError(f"Unsupported voice package: {option}")
+        language = self.coordinator.client.state.current_voice.get("language", "")
+        if not language:
+            raise HomeAssistantError("The robot did not report its voice language")
+        response = await self._async_await_command(
+            self.coordinator.client.set_custom_voice(
+                language=language,
+                resource_id=pack["resource_id"],
+                version=pack["version"],
+            ),
+            "set voice package",
+        )
+        # The APK treats RESULT_TYPE_SUCCESS (1) and
+        # SWITCH_VOICE_SUCCESS (3, an already-downloaded package) as success.
+        if response.result_code not in (1, 3):
+            raise HomeAssistantError(
+                f"Narwal action failed with result code {response.result_code}"
+            )
+        self.coordinator.client.state.current_voice = {
+            "language": language,
+            "version": pack["version"],
+            "description": pack.get("description") or pack.get("name", ""),
+            "resource_id": pack["resource_id"],
+        }
+        self.async_write_ha_state()
         self.coordinator.async_set_updated_data(self.coordinator.client.state)
