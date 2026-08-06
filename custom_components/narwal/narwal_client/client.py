@@ -73,6 +73,7 @@ class NarwalClient:
     _DEFAULT_CLEAN_PAYLOAD = bytes.fromhex("0a0e12002a0a0a060803100218012a00")
     _ZONE_TYPE_ROOM = 1
     _ZONE_TYPE_WHOLE_MAP = 3
+    _DEFAULT_CLEAN_PLAN_MODE = 1
 
     def __init__(self, *, device_id: str, product_id: str) -> None:
         self.device_id = device_id
@@ -181,20 +182,40 @@ class NarwalClient:
         return await self.send_command(TOPIC_CMD_YELL)
 
     async def start(self, **kwargs: Any) -> CommandResponse:
-        """Start whole-house cleaning with firmware-compatible payloads."""
+        """Start cleaning, falling back to the robot's mode-1 plan."""
         del kwargs
         response = await self.send_command(
-            TOPIC_CMD_START_CLEAN,
-            payload=self._DEFAULT_CLEAN_PAYLOAD,
-            timeout=10.0,
-        )
-        if response.result_code != CommandResult.NOT_APPLICABLE:
-            return response
-        return await self.send_command(
             TOPIC_CMD_START_CLEAN,
             payload=self._build_clean_payload_v2(),
             timeout=10.0,
         )
+        if response.success:
+            return response
+
+        plan_id = self._default_clean_plan_id()
+        if plan_id is None:
+            _LOGGER.warning(
+                "Full CleanTask was rejected with result code %s, but the "
+                "default mode-1 cleaning plan is unavailable",
+                response.result_code,
+            )
+            return response
+
+        _LOGGER.info(
+            "Full CleanTask was rejected with result code %s; retrying with "
+            "the default mode-1 cleaning plan",
+            response.result_code,
+        )
+        return await self.start_clean_plan(plan_id)
+
+    def _default_clean_plan_id(self) -> int | None:
+        """Return the first cleaning plan whose protocol mode is 1."""
+        for plan in self.state.clean_plans:
+            if self._as_int(plan.get("clean_mode")) == self._DEFAULT_CLEAN_PLAN_MODE:
+                plan_id = self._as_int(plan.get("id"))
+                if plan_id is not None:
+                    return plan_id
+        return None
 
     def _build_clean_payload_v2(
         self,

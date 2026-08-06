@@ -77,7 +77,16 @@
         }
       },
       "task_record": {
-        "name": "清洁任务记录"
+        "name": "最近清洁任务",
+        "state_attributes": {
+          "record_count": {"name": "缓存记录数"},
+          "started_at": {"name": "开始时间"},
+          "ended_at": {"name": "结束时间"},
+          "duration_minutes": {"name": "清洁时长（分钟）"},
+          "task_name": {"name": "任务名称"},
+          "records": {"name": "最近记录"},
+          "details": {"name": "最近记录详情"}
+        }
       },
       "battery_health_details": {
         "name": "电池健康详情"
@@ -93,6 +102,17 @@
       },
       "clean_progress": {
         "name": "实时清洁进度"
+      },
+      "latest_notification": {
+        "name": "最新机器人通知",
+        "state_attributes": {
+          "message_id": {"name": "消息 ID"},
+          "title": {"name": "标题"},
+          "content": {"name": "正文"},
+          "category": {"name": "类型"},
+          "created_at": {"name": "创建时间"},
+          "is_read": {"name": "已读"}
+        }
       }
     },
     "binary_sensor": {

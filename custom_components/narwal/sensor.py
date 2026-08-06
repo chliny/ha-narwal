@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from math import isfinite
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -11,14 +13,20 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfArea, UnitOfTime
+from homeassistant.const import (
+    MAX_LENGTH_STATE_STATE,
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfArea,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
-from .narwal_client import ConsumableInfo, NarwalState
+from .narwal_client import ConsumableInfo, NarwalNotification, NarwalState
 from .narwal_client.const import (
     CONSUMABLE_MAINTAIN_TYPE_MAP,
     CONSUMABLE_REPLACE_TYPE_MAP,
@@ -82,6 +90,7 @@ async def async_setup_entry(
         NarwalSensor(coordinator, description) for description in SENSOR_DESCRIPTIONS
     ]
     entities.append(NarwalChargingStateSensor(coordinator))
+    entities.append(NarwalLatestNotificationSensor(coordinator))
     known_consumables: set[str] = set()
     task_record_added = False
     optional_added: set[str] = set()
@@ -191,30 +200,83 @@ class NarwalChargingStateSensor(NarwalEntity, SensorEntity):
         return "mdi:battery-unknown"
 
 
+class NarwalLatestNotificationSensor(NarwalEntity, SensorEntity):
+    """Show the most recent cloud notification as persistent entity state."""
+
+    _attr_translation_key = "latest_notification"
+    _attr_icon = "mdi:message-alert-outline"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("sensor", "latest_notification")
+
+    @property
+    def native_value(self) -> str | None:
+        """Return a recorder-safe summary of the latest notification."""
+        notification = self._latest_notification
+        if notification is None:
+            return None
+        title = notification.title.strip()
+        content = notification.content.strip()
+        summary = title
+        if content and content != title:
+            summary = f"{title} — {content}" if title else content
+        if not summary:
+            return notification.message_id
+        if len(summary) <= MAX_LENGTH_STATE_STATE:
+            return summary
+        return f"{summary[: MAX_LENGTH_STATE_STATE - 3]}..."
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose the complete latest notification for dashboards and automations."""
+        notification = self._latest_notification
+        if notification is None:
+            return {}
+        return {
+            "message_id": notification.message_id,
+            "title": notification.title,
+            "content": notification.content,
+            "category": notification.category,
+            "created_at": notification.created_at,
+            "is_read": notification.is_read,
+        }
+
+    @property
+    def _latest_notification(self) -> NarwalNotification | None:
+        """Return the newest message while preserving cloud order for timestamp ties."""
+        state = self.coordinator.data
+        if state is None or not state.notifications:
+            return None
+        return max(state.notifications, key=lambda notification: notification.created_at)
+
+    @property
+    def available(self) -> bool:
+        """Cloud messages remain available while the robot sleeps."""
+        return self.coordinator.last_update_success
+
+
 class NarwalTaskRecordSensor(NarwalEntity, SensorEntity):
     """Expose cleaning-task history and fetched details."""
 
     _attr_translation_key = "task_record"
     _attr_icon = "mdi:history"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         super().__init__(coordinator)
         self._set_entity_identity("sensor", "task_record")
 
     @property
-    def native_value(self) -> str | None:
-        """Return the latest task record identifier."""
+    def native_value(self) -> datetime | None:
+        """Return the latest task time instead of an opaque record ID."""
         state = self.coordinator.data
         record = state.latest_task_record if state else None
         if not record:
             return None
-        value = (
-            record.get("clean_record_id")
-            or record.get("record_id")
-            or record.get("report_id")
-            or record.get("id")
+        return _task_record_datetime(record, "end_time") or _task_record_datetime(
+            record, "start_time"
         )
-        return str(value) if value is not None else None
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
@@ -222,11 +284,48 @@ class NarwalTaskRecordSensor(NarwalEntity, SensorEntity):
         state = self.coordinator.data
         if not state:
             return {}
-        return {
+        attributes: dict[str, object] = {
             "record_count": len(state.task_records),
             "records": state.task_records[:20],
             "details": state.task_record_details,
         }
+        record = state.latest_task_record
+        if not record:
+            return attributes
+        if (started_at := _task_record_datetime(record, "start_time")) is not None:
+            attributes["started_at"] = started_at.isoformat()
+        if (ended_at := _task_record_datetime(record, "end_time")) is not None:
+            attributes["ended_at"] = ended_at.isoformat()
+        duration = _task_record_number(record, "duration")
+        if duration is not None:
+            attributes["duration_minutes"] = round(duration / 60, 1)
+        custom_name = record.get("custom_name")
+        if isinstance(custom_name, str) and custom_name.strip():
+            attributes["task_name"] = custom_name.strip()
+        return attributes
+
+
+def _task_record_datetime(record: dict[str, object], key: str) -> datetime | None:
+    """Convert the app's confirmed Unix-seconds task fields to UTC."""
+    timestamp = _task_record_number(record, key)
+    if timestamp is None or timestamp <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, UTC)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _task_record_number(record: dict[str, object], key: str) -> float | None:
+    """Return a finite numeric task field without accepting booleans."""
+    value = record.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if isfinite(number) else None
 
 
 class NarwalBatteryHealthSensor(NarwalEntity, SensorEntity):

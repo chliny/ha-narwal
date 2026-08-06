@@ -77,7 +77,16 @@
         }
       },
       "task_record": {
-        "name": "Cleaning task history"
+        "name": "Latest cleaning task",
+        "state_attributes": {
+          "record_count": {"name": "Cached records"},
+          "started_at": {"name": "Started at"},
+          "ended_at": {"name": "Ended at"},
+          "duration_minutes": {"name": "Duration (minutes)"},
+          "task_name": {"name": "Task name"},
+          "records": {"name": "Recent records"},
+          "details": {"name": "Recent record details"}
+        }
       },
       "battery_health_details": {
         "name": "Battery health details"
@@ -93,6 +102,17 @@
       },
       "clean_progress": {
         "name": "Real-time cleaning progress"
+      },
+      "latest_notification": {
+        "name": "Latest robot notification",
+        "state_attributes": {
+          "message_id": {"name": "Message ID"},
+          "title": {"name": "Title"},
+          "content": {"name": "Content"},
+          "category": {"name": "Category"},
+          "created_at": {"name": "Created at"},
+          "is_read": {"name": "Read"}
+        }
       }
     },
     "binary_sensor": {

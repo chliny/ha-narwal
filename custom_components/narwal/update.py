@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from homeassistant.components.update import UpdateDeviceClass, UpdateEntity
+from homeassistant.components.update import (
+    UpdateDeviceClass,
+    UpdateEntity,
+    UpdateEntityFeature,
+)
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -27,7 +31,7 @@ class NarwalFirmwareUpdateEntity(NarwalEntity, UpdateEntity):
     _attr_translation_key = "firmware"
     _attr_device_class = UpdateDeviceClass.FIRMWARE
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_supported_features = 0
+    _attr_supported_features = UpdateEntityFeature(0)
 
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         """Initialize the firmware update entity."""
