@@ -22,6 +22,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
@@ -280,25 +281,22 @@ class NarwalTaskRecordSensor(NarwalEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        """Return the bounded record list and details fetched from the app API."""
+        """Return a concise, human-readable summary of the latest task."""
         state = self.coordinator.data
         if not state:
             return {}
-        attributes: dict[str, object] = {
-            "record_count": len(state.task_records),
-            "records": state.task_records[:20],
-            "details": state.task_record_details,
-        }
+        attributes: dict[str, object] = {"record_count": len(state.task_records)}
         record = state.latest_task_record
         if not record:
             return attributes
         if (started_at := _task_record_datetime(record, "start_time")) is not None:
-            attributes["started_at"] = started_at.isoformat()
+            attributes["started_at"] = _local_task_time(started_at)
         if (ended_at := _task_record_datetime(record, "end_time")) is not None:
-            attributes["ended_at"] = ended_at.isoformat()
+            attributes["ended_at"] = _local_task_time(ended_at)
         duration = _task_record_number(record, "duration")
-        if duration is not None:
-            attributes["duration_minutes"] = round(duration / 60, 1)
+        if duration is not None and duration >= 0:
+            minutes = round(duration / 60, 1)
+            attributes["duration_minutes"] = int(minutes) if minutes.is_integer() else minutes
         custom_name = record.get("custom_name")
         if isinstance(custom_name, str) and custom_name.strip():
             attributes["task_name"] = custom_name.strip()
@@ -314,6 +312,11 @@ def _task_record_datetime(record: dict[str, object], key: str) -> datetime | Non
         return datetime.fromtimestamp(timestamp, UTC)
     except (OSError, OverflowError, ValueError):
         return None
+
+
+def _local_task_time(value: datetime) -> str:
+    """Format a task timestamp in Home Assistant's configured local timezone."""
+    return dt_util.as_local(value).isoformat(sep=" ", timespec="seconds")
 
 
 def _task_record_number(record: dict[str, object], key: str) -> float | None:
