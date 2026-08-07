@@ -271,9 +271,10 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         """Probe and refresh optional robot-side APK protocol features."""
         calls: list[Callable[[], Awaitable[object]]] = [
             self.client.get_dry_mop_remaining_time,
-            self.client.get_clean_progress,
             self.client.get_clean_timeline,
         ]
+        if self.client.state.has_cleaning_task:
+            calls.append(self.client.get_clean_progress)
         if include_static:
             calls.extend(
                 (

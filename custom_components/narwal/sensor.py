@@ -20,7 +20,7 @@ from homeassistant.const import (
     UnitOfArea,
     UnitOfTime,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
@@ -92,6 +92,7 @@ async def async_setup_entry(
     ]
     entities.append(NarwalChargingStateSensor(coordinator))
     entities.append(NarwalLatestNotificationSensor(coordinator))
+    entities.append(NarwalCleanProgressSensor(coordinator))
     known_consumables: set[str] = set()
     task_record_added = False
     optional_added: set[str] = set()
@@ -113,8 +114,6 @@ async def async_setup_entry(
             optional.append(("dust_bag_health", NarwalDustBagHealthSensor(coordinator)))
         if state.clean_timeline_supported:
             optional.append(("clean_timeline", NarwalCleanTimelineSensor(coordinator)))
-        if state.clean_progress_supported:
-            optional.append(("clean_progress", NarwalCleanProgressSensor(coordinator)))
         new_optional = [entity for key, entity in optional if key not in optional_added]
         optional_added.update(key for key, _entity in optional)
         if new_optional:
@@ -488,7 +487,7 @@ class NarwalCleanTimelineSensor(NarwalEntity, SensorEntity):
 
 
 class NarwalCleanProgressSensor(NarwalEntity, SensorEntity):
-    """Real-time progress payload combined with confirmed live counters."""
+    """Keep the latest real-time progress snapshot while the robot is idle."""
 
     _attr_translation_key = "clean_progress"
     _attr_icon = "mdi:progress-clock"
@@ -496,22 +495,38 @@ class NarwalCleanProgressSensor(NarwalEntity, SensorEntity):
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         super().__init__(coordinator)
         self._set_entity_identity("sensor", "clean_progress")
+        self._progress_state: str | None = None
+        self._progress_attributes: dict[str, object] = {}
+        self._capture_active_progress()
 
     @property
     def native_value(self) -> str | None:
-        state = self.coordinator.data
-        return state.working_status.name.lower() if state else None
+        """Return the last status captured during an active cleaning task."""
+        return self._progress_state
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
+        """Return the last counters and detail captured during cleaning."""
+        return self._progress_attributes.copy()
+
+    def _capture_active_progress(self) -> bool:
+        """Capture live values only while a cleaning task is active."""
         state = self.coordinator.data
-        if not state:
-            return {}
-        return {
+        if state is None or not state.has_cleaning_task:
+            return False
+        self._progress_state = state.working_status.name.lower()
+        self._progress_attributes = {
             "cleaning_area_cm2": state.cleaning_area,
             "cleaning_time_seconds": state.cleaning_time,
-            "progress": state.clean_progress,
+            "progress": state.clean_progress.copy(),
         }
+        return True
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Write state only for active cleaning updates."""
+        if self._capture_active_progress():
+            self.async_write_ha_state()
 
 
 _CONSUMABLE_ICON_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
