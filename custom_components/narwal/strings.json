@@ -83,7 +83,11 @@
           "started_at": {"name": "Started at"},
           "ended_at": {"name": "Ended at"},
           "duration_minutes": {"name": "Duration (minutes)"},
-          "task_name": {"name": "Task name"}
+          "task_name": {
+            "name": "Task name",
+            "state": {"cleaning_task": "Cleaning task"}
+          },
+          "recent_tasks": {"name": "Recent tasks"}
         }
       },
       "battery_health_details": {

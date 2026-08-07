@@ -297,9 +297,20 @@ class NarwalTaskRecordSensor(NarwalEntity, SensorEntity):
         if duration is not None and duration >= 0:
             minutes = round(duration / 60, 1)
             attributes["duration_minutes"] = int(minutes) if minutes.is_integer() else minutes
-        custom_name = record.get("custom_name")
-        if isinstance(custom_name, str) and custom_name.strip():
-            attributes["task_name"] = custom_name.strip()
+        detail = _task_record_detail(state, record)
+        attributes["task_name"] = _task_record_name(record, detail)
+        recent_tasks = [
+            summary
+            for item in state.task_records[:5]
+            if (
+                summary := _task_record_summary(
+                    item,
+                    _task_record_detail(state, item),
+                )
+            )
+        ]
+        if recent_tasks:
+            attributes["recent_tasks"] = recent_tasks
         return attributes
 
 
@@ -317,6 +328,60 @@ def _task_record_datetime(record: dict[str, object], key: str) -> datetime | Non
 def _local_task_time(value: datetime) -> str:
     """Format a task timestamp in Home Assistant's configured local timezone."""
     return dt_util.as_local(value).isoformat(sep=" ", timespec="seconds")
+
+
+def _task_record_id(record: dict[str, object]) -> str | None:
+    """Return the identifier used by the bounded detail cache."""
+    value = (
+        record.get("clean_record_id")
+        or record.get("record_id")
+        or record.get("report_id")
+        or record.get("id")
+    )
+    return str(value) if value is not None else None
+
+
+def _task_record_detail(
+    state: NarwalState,
+    record: dict[str, object],
+) -> dict[str, object] | None:
+    """Return a fetched detail without exposing its raw structure."""
+    record_id = _task_record_id(record)
+    return state.task_record_details.get(record_id) if record_id is not None else None
+
+
+def _task_record_name(
+    record: dict[str, object],
+    detail: dict[str, object] | None,
+) -> str:
+    """Prefer the confirmed custom name and otherwise use a translatable fallback."""
+    for source in (record, detail):
+        if source is None:
+            continue
+        value = source.get("custom_name")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "cleaning_task"
+
+
+def _task_record_summary(
+    record: dict[str, object],
+    detail: dict[str, object] | None,
+) -> dict[str, object]:
+    """Create one bounded history item containing only readable fields."""
+    summary: dict[str, object] = {}
+    name = _task_record_name(record, detail)
+    if name != "cleaning_task":
+        summary["task_name"] = name
+    if (started_at := _task_record_datetime(record, "start_time")) is not None:
+        summary["started_at"] = _local_task_time(started_at)
+    if (ended_at := _task_record_datetime(record, "end_time")) is not None:
+        summary["ended_at"] = _local_task_time(ended_at)
+    duration = _task_record_number(record, "duration")
+    if duration is not None and duration >= 0:
+        minutes = round(duration / 60, 1)
+        summary["duration_minutes"] = int(minutes) if minutes.is_integer() else minutes
+    return summary
 
 
 def _task_record_number(record: dict[str, object], key: str) -> float | None:

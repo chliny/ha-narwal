@@ -83,7 +83,11 @@
           "started_at": {"name": "开始时间"},
           "ended_at": {"name": "结束时间"},
           "duration_minutes": {"name": "清洁时长（分钟）"},
-          "task_name": {"name": "任务名称"}
+          "task_name": {
+            "name": "任务名称",
+            "state": {"cleaning_task": "清洁任务"}
+          },
+          "recent_tasks": {"name": "最近任务"}
         }
       },
       "battery_health_details": {
