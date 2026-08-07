@@ -65,9 +65,6 @@
       "cleaning_time": {
         "name": "Cleaning time"
       },
-      "firmware_version": {
-        "name": "Firmware version"
-      },
       "charging_state": {
         "name": "Charging",
         "state": {
@@ -78,6 +75,7 @@
       },
       "task_record": {
         "name": "Latest cleaning task",
+        "state": {"cleaning_task": "Cleaning task"},
         "state_attributes": {
           "record_count": {"name": "Cached records"},
           "started_at": {"name": "Started at"},
@@ -86,8 +84,7 @@
           "task_name": {
             "name": "Task name",
             "state": {"cleaning_task": "Cleaning task"}
-          },
-          "recent_tasks": {"name": "Recent tasks"}
+          }
         }
       },
       "battery_health_details": {

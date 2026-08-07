@@ -65,9 +65,6 @@
       "cleaning_time": {
         "name": "Temps de nettoyage"
       },
-      "firmware_version": {
-        "name": "Version du firmware"
-      },
       "charging_state": {
         "name": "État de charge",
         "state": {
@@ -78,6 +75,7 @@
       },
       "task_record": {
         "name": "Dernière tâche de nettoyage",
+        "state": {"cleaning_task": "Tâche de nettoyage"},
         "state_attributes": {
           "record_count": {"name": "Enregistrements en cache"},
           "started_at": {"name": "Début"},
@@ -86,8 +84,7 @@
           "task_name": {
             "name": "Nom de la tâche",
             "state": {"cleaning_task": "Tâche de nettoyage"}
-          },
-          "recent_tasks": {"name": "Tâches récentes"}
+          }
         }
       },
       "battery_health_details": {

@@ -65,9 +65,6 @@
       "cleaning_time": {
         "name": "清扫时间"
       },
-      "firmware_version": {
-        "name": "固件版本"
-      },
       "charging_state": {
         "name": "充电状态",
         "state": {
@@ -78,6 +75,7 @@
       },
       "task_record": {
         "name": "最近清洁任务",
+        "state": {"cleaning_task": "清洁任务"},
         "state_attributes": {
           "record_count": {"name": "缓存记录数"},
           "started_at": {"name": "开始时间"},
@@ -86,8 +84,7 @@
           "task_name": {
             "name": "任务名称",
             "state": {"cleaning_task": "清洁任务"}
-          },
-          "recent_tasks": {"name": "最近任务"}
+          }
         }
       },
       "battery_health_details": {
