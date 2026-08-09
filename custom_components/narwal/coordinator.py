@@ -60,7 +60,7 @@ APP_LANGUAGE_CODES = {
 
 
 def _app_language_code(language: str) -> str:
-    """Map a Home Assistant locale to one of the APK's language tags."""
+    """Map a Home Assistant locale to a supported robot language tag."""
     normalized = language.replace("_", "-")
     if normalized.lower() in {"zh-hant", "zh-tw", "zh-hk"}:
         return "zh-TW"
@@ -268,7 +268,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             await self._async_refresh_firmware_update()
 
     async def _async_refresh_extended_state(self, *, include_static: bool) -> None:
-        """Probe and refresh optional robot-side APK protocol features."""
+        """Probe and refresh optional robot-side protocol features."""
         calls: list[Callable[[], Awaitable[object]]] = [
             self.client.get_dry_mop_remaining_time,
             self.client.get_clean_timeline,

@@ -55,10 +55,11 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         translation_key="cleaning_area",
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         state_class=SensorStateClass.MEASUREMENT,
-        # working_status field 13 is cm²; divide by 10000 for m².
-        # NEEDS LIVE VALIDATION: only populated during active cleaning.
+        # working_status field 2 is coveredArea, already expressed in m².
         value_fn=lambda state: (
-            round(state.cleaning_area / 10000, 2) if state.cleaning_area > 0 else None
+            round(state.cleaning_area, 2)
+            if state.cleaning_area > 0 and isfinite(state.cleaning_area)
+            else None
         ),
     ),
     NarwalSensorEntityDescription(
@@ -356,7 +357,7 @@ def _task_record_number(record: dict[str, object], key: str) -> float | None:
 
 
 class NarwalBatteryHealthSensor(NarwalEntity, SensorEntity):
-    """Battery health state with all raw APK detail fields."""
+    """Battery health state with all reported detail fields."""
 
     _attr_translation_key = "battery_health_details"
     _attr_icon = "mdi:battery-heart-variant"
@@ -394,8 +395,8 @@ class NarwalDryMopRemainingSensor(NarwalEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, str]:
-        # APK protobuf names the field remainTime but does not declare a unit.
-        return {"protocol_unit": "not declared by APK schema"}
+        # The remainTime protocol field does not declare a unit.
+        return {"protocol_unit": "not declared by protocol"}
 
 
 class NarwalDustBagHealthSensor(NarwalEntity, SensorEntity):
@@ -476,7 +477,7 @@ class NarwalCleanProgressSensor(NarwalEntity, SensorEntity):
             return False
         self._progress_state = state.working_status.name.lower()
         self._progress_attributes = {
-            "cleaning_area_cm2": state.cleaning_area,
+            "cleaning_area_m2": state.cleaning_area,
             "cleaning_time_seconds": state.cleaning_time,
             "progress": state.clean_progress.copy(),
         }

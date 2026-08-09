@@ -46,7 +46,7 @@ ROOM_COLORS: list[tuple[int, int, int]] = [
     (174, 198, 207),  # 22 - pastel blue
 ]
 
-# Obstacle/furniture annotation colors by catalog from APK map_furniture.json
+# Obstacle/furniture annotation colors by protocol catalog
 OBSTACLE_COLORS: dict[int, tuple[int, int, int]] = {
     # Beds (1-3)
     1: (180, 140, 100),    # single bed - tan

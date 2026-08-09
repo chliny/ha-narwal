@@ -27,7 +27,7 @@ class RoomInfo:
 
     Fields from get_map / get_editable_map field 2.12:
       field 1: room_id (matches pixel value >> 8 in map grid)
-      field 2: room_sub_type — ROOM_TYPE enum from APK (0=unspecified,
+      field 2: room_sub_type — ROOM_TYPE protocol enum (0=unspecified,
                1=main bedroom, 2=secondary room, 3=living room, 4=kitchen,
                5=study, 6=bathroom, 7=dining room, 8=corridor, 9=balcony,
                10=utility room, 11=cloak room, 12=nursery, 13=recreation,
@@ -44,7 +44,7 @@ class RoomInfo:
     instance_index: int = 0  # numbering for duplicates (field 8)
     model_key: str = ""  # product_key — selects per-model name overrides
 
-    # ROOM_TYPE enum → default display name (from APK libapp.so string analysis)
+    # ROOM_TYPE enum → default display name
     ROOM_TYPE_NAMES: dict[int, str] = field(default=None, repr=False)
 
     # Per-model overrides where Narwal renamed sub-types between models.
@@ -107,9 +107,9 @@ class ObstacleInfo:
     """An obstacle/furniture annotation on the map.
 
     Parsed from get_map field 2.32 (MapFurnitureInfoList).
-    The typeId maps to the furniture enum from APK map_furniture.json.
+    The typeId maps to the protocol furniture enum.
 
-    bbp field mapping (confirmed from probe data + APK schema):
+    Protobuf field mapping:
       bbp field 1 -> id (int32)
       bbp field 2 -> typeId (uint32, furniture enum)
       bbp field 3.1.1 -> centerX (float32)
@@ -120,14 +120,14 @@ class ObstacleInfo:
     """
 
     id: int = 0
-    type_id: int = 0  # Furniture enum from APK map_furniture.json
+    type_id: int = 0  # Protocol furniture enum
     center_x: float = 0.0  # World X coordinate
     center_y: float = 0.0  # World Y coordinate
     width: float = 0.0  # Object width in grid units
     height: float = 0.0  # Object height in grid units
     angle: float = 0.0  # Rotation in degrees
 
-    # Full furniture type enum from APK map_furniture.json
+    # Full protocol furniture type enum
     TYPE_NAMES: ClassVar[dict[int, str]] = {
         0: "Placeholder",
         1: "Single Bed",
@@ -196,6 +196,18 @@ def _to_float32(val: Any) -> float | None:
     if isinstance(val, int):
         try:
             return struct.unpack("f", struct.pack("I", val & 0xFFFFFFFF))[0]
+        except struct.error:
+            return None
+    return None
+
+
+def _to_float64(val: Any) -> float | None:
+    """Convert a schema-less protobuf fixed64 value to a double."""
+    if isinstance(val, float):
+        return val
+    if isinstance(val, int):
+        try:
+            return struct.unpack("<d", struct.pack("<Q", val & 0xFFFFFFFFFFFFFFFF))[0]
         except struct.error:
             return None
     return None
@@ -584,7 +596,7 @@ class NarwalState:
     dust_bag_health_supported: bool = False
 
     # Optional MQTT features. A corresponding ``*_supported`` flag becomes
-    # true only after that robot successfully answers the APK protocol topic.
+    # true only after that robot successfully answers the protocol topic.
     battery_details: dict[str, Any] = field(default_factory=dict)
     battery_details_supported: bool = False
     dry_mop_remaining_time: int | None = None
@@ -613,7 +625,7 @@ class NarwalState:
     position: Position | None = None
 
     # Cleaning stats
-    cleaning_area: int = 0  # cm²
+    cleaning_area: float = 0.0  # m²
     cleaning_time: int = 0  # seconds
 
     # Map
@@ -726,11 +738,12 @@ class NarwalState:
     def update_from_working_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded working_status message.
 
-        Confirmed via 35-min monitor capture (2026-02-27):
-          Field 3  = current session elapsed time (seconds)
-                     (confirmed: 2136→2159 over 35-min clean)
-          Field 13 = cleaning area (cm²) — CONFIRMED (18000 = 1.8m²)
-          Field 15 = 600 during cleaning (purpose uncertain)
+        WorkingStatus protobuf fields:
+          Field 2 = coveredArea (double, already expressed in m²)
+          Field 3 = timeConsuming (seconds)
+
+        Because the message is decoded without a schema, blackboxprotobuf
+        exposes field 2 as the raw fixed64 bit pattern rather than a float.
         """
         self.raw_working_status = decoded
         if "3" in decoded:
@@ -738,11 +751,10 @@ class NarwalState:
                 self.cleaning_time = int(decoded["3"])
             except (ValueError, TypeError):
                 pass
-        if "13" in decoded:
-            self.cleaning_area = int(decoded["13"])
-        if "15" in decoded:
-            # Field 15 may be cumulative time; prefer field 3 for current session
-            pass
+        if "2" in decoded:
+            area = _to_float64(decoded["2"])
+            if area is not None:
+                self.cleaning_area = area
 
     def update_from_base_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded robot_base_status message.

@@ -396,7 +396,7 @@ class NarwalVoicePackSelect(NarwalEntity, SelectEntity):
             ),
             "set voice package",
         )
-        # The APK treats RESULT_TYPE_SUCCESS (1) and
+        # The protocol treats RESULT_TYPE_SUCCESS (1) and
         # SWITCH_VOICE_SUCCESS (3, an already-downloaded package) as success.
         if response.result_code not in (1, 3):
             raise HomeAssistantError(

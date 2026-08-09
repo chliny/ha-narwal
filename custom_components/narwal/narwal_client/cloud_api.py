@@ -329,9 +329,9 @@ class NarwalCloudApi:
     ) -> list[dict[str, Any]]:
         """Return a bounded cleaning-task history list.
 
-        The APK's all-record requester has no query parameters. Its by-map
-        requester is the only variant that exposes ``page`` and is therefore
-        used when the active map is known.
+        The all-record endpoint has no query parameters. The by-map endpoint
+        is the only variant that exposes ``page`` and is therefore used when
+        the active map is known.
         """
         if self.account is None:
             await self.login()
@@ -353,7 +353,7 @@ class NarwalCloudApi:
                     "/sweeper-map-scheme-app-server/v1/work_record/listByMap",
                     params={
                         "page": str(page),
-                        # WorkRecordTabType.all has enum index 1 in APK 2.6.90.
+                        # Record type 1 selects all cleaning records.
                         "type": "1",
                         "status": "0",
                         "deviceId": device_id,
@@ -402,7 +402,7 @@ class NarwalCloudApi:
         product_id: str,
         record_limit: int,
     ) -> list[dict[str, Any]]:
-        """Return the APK's unpaged all-map record list."""
+        """Return the unpaged all-map record list."""
         result = await self._request(
             "GET",
             "/sweeper-map-scheme-app-server/v2/work_record/all",
@@ -418,7 +418,7 @@ class NarwalCloudApi:
         product_id: str,
         firmware_version: str,
     ) -> dict[str, Any]:
-        """Return the APK's read-only firmware update description."""
+        """Return the read-only firmware update description."""
         if self.account is None:
             await self.login()
         result = await self._request(
@@ -504,7 +504,7 @@ class NarwalCloudApi:
         device_language_code: str,
         app_language_code: str = "zh-CN",
     ) -> list[dict[str, str]]:
-        """Return voice packages using the same query as the Android app."""
+        """Return voice packages supported by the device language."""
         if self.account is None:
             await self.login()
         result = await self._request(
@@ -517,7 +517,7 @@ class NarwalCloudApi:
             },
             device_id=device_id,
             product_id=product_id,
-            # VoiceService accepts both response codes in APK 2.6.90.
+            # VoiceService accepts both documented success response codes.
             accepted_codes=frozenset({"0", "400"}),
         )
         values = result.get("list", []) if isinstance(result, dict) else result

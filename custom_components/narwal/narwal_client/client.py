@@ -622,7 +622,7 @@ class NarwalClient:
         return response
 
     async def get_battery_info(self) -> CommandResponse:
-        """Read the APK battery-health detail payload."""
+        """Read the battery-health detail payload."""
         response = await self.send_command(TOPIC_CMD_GET_BATTERY_INFO)
         names = {
             "1": "full_charge_capacity",
@@ -727,7 +727,7 @@ class NarwalClient:
         return response
 
     async def get_clean_progress(self) -> CommandResponse:
-        """Request the APK's current clean-progress detail payload."""
+        """Request the current clean-progress detail payload."""
         response = await self.send_command(TOPIC_CMD_GET_CLEAN_PROGRESS)
         if not response.not_applicable and response.data:
             self.state.clean_progress = self._plain_dict(response.data)
