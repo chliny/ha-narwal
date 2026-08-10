@@ -229,7 +229,7 @@ class NarwalCloudClient(NarwalClient):
         self._mqtt: mqtt.Client | None = None
         self._mqtt_ready = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._pending: dict[str, asyncio.Future[bytes]] = {}
+        self._pending: dict[str, tuple[str, asyncio.Future[bytes]]] = {}
         self._disconnect_waiter = asyncio.Event()
         self._connect_error: Exception | None = None
         self._subscribe_mid: int | None = None
@@ -542,7 +542,7 @@ class NarwalCloudClient(NarwalClient):
 
     def _fail_connect(self, error: Exception) -> None:
         self._connect_error = error
-        for future in self._pending.values():
+        for _response_topic, future in self._pending.values():
             if not future.done():
                 future.set_exception(error)
         self._mqtt_ready.set()
@@ -569,7 +569,7 @@ class NarwalCloudClient(NarwalClient):
             activation_task.cancel()
         self._disconnect_waiter.set()
         error = NarwalConnectionError("Narwal cloud MQTT connection closed")
-        for future in self._pending.values():
+        for _response_topic, future in self._pending.values():
             if not future.done():
                 future.set_exception(error)
 
@@ -585,17 +585,38 @@ class NarwalCloudClient(NarwalClient):
         raw = bytes(message.payload)
         if message.topic.endswith("/response"):
             correlation = _correlation_id(getattr(message.properties, "CorrelationData", None))
-            loop.call_soon_threadsafe(self._deliver_response, correlation, raw)
+            loop.call_soon_threadsafe(
+                self._deliver_response,
+                correlation,
+                message.topic,
+                raw,
+            )
             return
         loop.call_soon_threadsafe(
             lambda: asyncio.create_task(self._handle_cloud_broadcast(message.topic, raw))
         )
 
-    def _deliver_response(self, correlation: str, raw: bytes) -> None:
+    def _deliver_response(
+        self,
+        correlation: str,
+        response_topic: str,
+        raw: bytes,
+    ) -> None:
         self._mark_robot_reachable()
-        future = self._pending.get(correlation)
-        if future is None and len(self._pending) == 1:
-            future = next(iter(self._pending.values()))
+        pending = self._pending.get(correlation)
+        future = (
+            pending[1]
+            if pending is not None and pending[0] == response_topic
+            else None
+        )
+        if future is None:
+            topic_futures = [
+                pending_future
+                for pending_topic, pending_future in self._pending.values()
+                if pending_topic == response_topic
+            ]
+            if len(topic_futures) == 1:
+                future = topic_futures[0]
         if future is not None and not future.done():
             future.set_result(raw)
 
@@ -705,7 +726,7 @@ class NarwalCloudClient(NarwalClient):
         future: asyncio.Future[bytes] | None = None
         if expect_response:
             future = asyncio.get_running_loop().create_future()
-            self._pending[message_id] = future
+            self._pending[message_id] = (response_topic, future)
         info = client.publish(
             request_topic,
             _service_envelope(account.uuid, payload),
