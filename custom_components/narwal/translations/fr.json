@@ -75,7 +75,15 @@
       },
       "task_record": {
         "name": "Dernière tâche de nettoyage",
-        "state": {"cleaning_task": "Tâche de nettoyage"},
+        "state": {
+          "cleaning_task": "Tâche de nettoyage",
+          "vacuum": "Aspiration",
+          "mop": "Lavage à la vadrouille",
+          "vacuum_and_mop": "Aspiration et lavage à la vadrouille",
+          "vacuum_then_mop": "Aspiration puis lavage à la vadrouille",
+          "freo_mind": "Freo Mind",
+          "customization": "Nettoyage personnalisé"
+        },
         "state_attributes": {
           "record_count": {"name": "Enregistrements en cache"},
           "started_at": {"name": "Début"},
@@ -83,7 +91,15 @@
           "duration_minutes": {"name": "Durée (minutes)"},
           "task_name": {
             "name": "Nom de la tâche",
-            "state": {"cleaning_task": "Tâche de nettoyage"}
+            "state": {
+              "cleaning_task": "Tâche de nettoyage",
+              "vacuum": "Aspiration",
+              "mop": "Lavage à la vadrouille",
+              "vacuum_and_mop": "Aspiration et lavage à la vadrouille",
+              "vacuum_then_mop": "Aspiration puis lavage à la vadrouille",
+              "freo_mind": "Freo Mind",
+              "customization": "Nettoyage personnalisé"
+            }
           }
         }
       },

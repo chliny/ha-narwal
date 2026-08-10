@@ -75,7 +75,15 @@
       },
       "task_record": {
         "name": "最近清洁任务",
-        "state": {"cleaning_task": "清洁任务"},
+        "state": {
+          "cleaning_task": "清洁任务",
+          "vacuum": "扫地",
+          "mop": "拖地",
+          "vacuum_and_mop": "扫拖同时",
+          "vacuum_then_mop": "先扫后拖",
+          "freo_mind": "鲸灵托管",
+          "customization": "自定义清洁"
+        },
         "state_attributes": {
           "record_count": {"name": "缓存记录数"},
           "started_at": {"name": "开始时间"},
@@ -83,7 +91,15 @@
           "duration_minutes": {"name": "清洁时长（分钟）"},
           "task_name": {
             "name": "任务名称",
-            "state": {"cleaning_task": "清洁任务"}
+            "state": {
+              "cleaning_task": "清洁任务",
+              "vacuum": "扫地",
+              "mop": "拖地",
+              "vacuum_and_mop": "扫拖同时",
+              "vacuum_then_mop": "先扫后拖",
+              "freo_mind": "鲸灵托管",
+              "customization": "自定义清洁"
+            }
           }
         }
       },

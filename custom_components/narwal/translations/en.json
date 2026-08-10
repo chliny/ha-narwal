@@ -75,7 +75,15 @@
       },
       "task_record": {
         "name": "Latest cleaning task",
-        "state": {"cleaning_task": "Cleaning task"},
+        "state": {
+          "cleaning_task": "Cleaning task",
+          "vacuum": "Vacuum",
+          "mop": "Mop",
+          "vacuum_and_mop": "Vacuum and mop",
+          "vacuum_then_mop": "Vacuum then mop",
+          "freo_mind": "Freo Mind",
+          "customization": "Custom cleaning"
+        },
         "state_attributes": {
           "record_count": {"name": "Cached records"},
           "started_at": {"name": "Started at"},
@@ -83,7 +91,15 @@
           "duration_minutes": {"name": "Duration (minutes)"},
           "task_name": {
             "name": "Task name",
-            "state": {"cleaning_task": "Cleaning task"}
+            "state": {
+              "cleaning_task": "Cleaning task",
+              "vacuum": "Vacuum",
+              "mop": "Mop",
+              "vacuum_and_mop": "Vacuum and mop",
+              "vacuum_then_mop": "Vacuum then mop",
+              "freo_mind": "Freo Mind",
+              "customization": "Custom cleaning"
+            }
           }
         }
       },

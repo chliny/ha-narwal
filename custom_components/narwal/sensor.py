@@ -33,6 +33,17 @@ from .narwal_client.const import (
     CONSUMABLE_REPLACE_TYPE_MAP,
 )
 
+_TASK_RECORD_TYPE_STATES: dict[int, str] = {
+    # APK ReportBaseTypes.TaskType, used by the work-record JSON model.
+    0: "cleaning_task",  # TASK_TYPE_UNSPECIFIED
+    1: "vacuum",  # TASK_TYPE_SWEEP
+    2: "mop",  # TASK_TYPE_MOP
+    3: "vacuum_and_mop",  # TASK_TYPE_SWEEP_MOP_SYNC
+    4: "vacuum_then_mop",  # TASK_TYPE_SWEEP_THEN_MOP
+    5: "freo_mind",  # TASK_TYPE_SMART
+    6: "customization",  # TASK_TYPE_CUSTOM
+}
+
 
 @dataclass(frozen=True, kw_only=True)
 class NarwalSensorEntityDescription(SensorEntityDescription):
@@ -334,14 +345,19 @@ def _task_record_name(
     record: dict[str, object],
     detail: dict[str, object] | None,
 ) -> str:
-    """Prefer the confirmed custom name and otherwise use a translatable fallback."""
+    """Return a custom name or a confirmed translatable task-mode name."""
+    task_type_state: str | None = None
     for source in (record, detail):
         if source is None:
             continue
         value = source.get("custom_name")
         if isinstance(value, str) and value.strip():
             return value.strip()
-    return "cleaning_task"
+        if task_type_state is None:
+            task_type = _task_record_number(source, "task_type")
+            if task_type is not None and task_type.is_integer():
+                task_type_state = _TASK_RECORD_TYPE_STATES.get(int(task_type))
+    return task_type_state or "cleaning_task"
 
 
 def _task_record_number(record: dict[str, object], key: str) -> float | None:
