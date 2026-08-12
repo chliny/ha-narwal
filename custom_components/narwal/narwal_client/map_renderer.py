@@ -17,6 +17,12 @@ from __future__ import annotations
 import io
 import logging
 import zlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PIL import Image, ImageDraw
+
+    from .models import ObstacleInfo
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +42,7 @@ ROOM_COLORS: list[tuple[int, int, int]] = [
     (216, 191, 216),  # 12 - thistle
     (250, 250, 210),  # 13 - light goldenrod
     (173, 216, 230),  # 14 - light blue
-    (244, 164, 96),   # 15 - sandy brown
+    (244, 164, 96),  # 15 - sandy brown
     (245, 222, 179),  # 16 - wheat
     (127, 255, 212),  # 17 - aquamarine
     (255, 160, 122),  # 18 - light salmon
@@ -49,59 +55,59 @@ ROOM_COLORS: list[tuple[int, int, int]] = [
 # Obstacle/furniture annotation colors by protocol catalog
 OBSTACLE_COLORS: dict[int, tuple[int, int, int]] = {
     # Beds (1-3)
-    1: (180, 140, 100),    # single bed - tan
-    2: (180, 140, 100),    # double bed - tan
-    3: (180, 140, 100),    # baby bed - tan
+    1: (180, 140, 100),  # single bed - tan
+    2: (180, 140, 100),  # double bed - tan
+    3: (180, 140, 100),  # baby bed - tan
     # Tables (4-7, 31)
-    4: (160, 130, 90),     # dining table - brown
-    5: (160, 130, 90),     # round table - brown
-    6: (160, 130, 90),     # tea table - brown
-    7: (160, 130, 90),     # round tea table - brown
-    31: (160, 130, 90),    # desk - brown
+    4: (160, 130, 90),  # dining table - brown
+    5: (160, 130, 90),  # round table - brown
+    6: (160, 130, 90),  # tea table - brown
+    7: (160, 130, 90),  # round tea table - brown
+    31: (160, 130, 90),  # desk - brown
     # Cupboards/storage (8-12)
-    8: (140, 120, 100),    # TV stand - dark tan
-    9: (140, 120, 100),    # bedside table - dark tan
-    10: (140, 120, 100),   # locker - dark tan
-    11: (140, 120, 100),   # wardrobe - dark tan
-    12: (140, 120, 100),   # shoe cabinet - dark tan
+    8: (140, 120, 100),  # TV stand - dark tan
+    9: (140, 120, 100),  # bedside table - dark tan
+    10: (140, 120, 100),  # locker - dark tan
+    11: (140, 120, 100),  # wardrobe - dark tan
+    12: (140, 120, 100),  # shoe cabinet - dark tan
     # Sofas/chairs (13-18, 30)
-    13: (100, 160, 130),   # armchair - sage
-    14: (100, 160, 130),   # sofa - sage
-    15: (100, 160, 130),   # L-shaped sofa - sage
-    16: (100, 160, 130),   # lazy chair - sage
-    17: (100, 160, 130),   # chair - sage
-    18: (100, 160, 130),   # bar chair - sage
-    30: (100, 160, 130),   # U-shaped sofa - sage
+    13: (100, 160, 130),  # armchair - sage
+    14: (100, 160, 130),  # sofa - sage
+    15: (100, 160, 130),  # L-shaped sofa - sage
+    16: (100, 160, 130),  # lazy chair - sage
+    17: (100, 160, 130),  # chair - sage
+    18: (100, 160, 130),  # bar chair - sage
+    30: (100, 160, 130),  # U-shaped sofa - sage
     # Pets (19-21, 75-76)
-    19: (200, 160, 120),   # cat toilet - peach
-    20: (200, 160, 120),   # pet feeder - peach
-    21: (200, 160, 120),   # pet house - peach
-    75: (200, 160, 120),   # cat house - peach
-    76: (200, 160, 120),   # dog house - peach
+    19: (200, 160, 120),  # cat toilet - peach
+    20: (200, 160, 120),  # pet feeder - peach
+    21: (200, 160, 120),  # pet house - peach
+    75: (200, 160, 120),  # cat house - peach
+    76: (200, 160, 120),  # dog house - peach
     # Appliances (22-25, 34)
-    22: (150, 180, 200),   # washing machine - steel blue
-    23: (150, 180, 200),   # refrigerator - steel blue
-    24: (150, 180, 200),   # air conditioner - steel blue
-    25: (150, 180, 200),   # fan - steel blue
-    34: (150, 180, 200),   # stove - steel blue
+    22: (150, 180, 200),  # washing machine - steel blue
+    23: (150, 180, 200),  # refrigerator - steel blue
+    24: (150, 180, 200),  # air conditioner - steel blue
+    25: (150, 180, 200),  # fan - steel blue
+    34: (150, 180, 200),  # stove - steel blue
     # Bathroom (28, 33)
-    28: (120, 180, 220),   # toilet - light blue
-    33: (120, 180, 220),   # washbasin - light blue
+    28: (120, 180, 220),  # toilet - light blue
+    33: (120, 180, 220),  # washbasin - light blue
     # Misc (26-27, 29, 32, 77-78)
-    26: (100, 180, 100),   # potted plant - green
-    27: (200, 200, 220),   # floor mirror - silver
-    29: (80, 80, 80),      # piano - dark gray
-    32: (80, 80, 80),      # grand piano - dark gray
-    77: (200, 200, 200),   # round placeholder - gray
-    78: (200, 200, 200),   # weighing scale - gray
+    26: (100, 180, 100),  # potted plant - green
+    27: (200, 200, 220),  # floor mirror - silver
+    29: (80, 80, 80),  # piano - dark gray
+    32: (80, 80, 80),  # grand piano - dark gray
+    77: (200, 200, 200),  # round placeholder - gray
+    78: (200, 200, 200),  # weighing scale - gray
 }
 OBSTACLE_COLOR_DEFAULT = (200, 200, 200)
 
 # Special pixel colors
-COLOR_UNKNOWN = (40, 40, 40)         # outside map / unmapped
+COLOR_UNKNOWN = (40, 40, 40)  # outside map / unmapped
 COLOR_UNASSIGNED_FLOOR = (200, 200, 200)  # floor not assigned to a room
 COLOR_UNASSIGNED_OBSTACLE = (80, 80, 80)  # obstacle not in a room
-COLOR_FALLBACK = (180, 180, 180)     # unknown room ID
+COLOR_FALLBACK = (180, 180, 180)  # unknown room ID
 
 
 def decompress_map(compressed: bytes) -> bytes:
@@ -134,9 +140,7 @@ def decompress_map(compressed: bytes) -> bytes:
     except zlib.error:
         pass
 
-    _LOGGER.warning(
-        "Could not decompress map data (%d bytes), using raw", len(compressed)
-    )
+    _LOGGER.warning("Could not decompress map data (%d bytes), using raw", len(compressed))
     return compressed
 
 
@@ -155,31 +159,43 @@ def _decode_packed_varints(data: bytes) -> list[int]:
     Returns:
         List of integer pixel values.
     """
-    if len(data) < 4:
+    if not data:
         return []
 
-    # Skip protobuf header: field tag (1 byte) + length varint (variable)
-    pos = 0
+    payload = data
     if data[0] == 0x0A:  # field 1, wire type 2
         pos = 1
-        # Skip the length varint
-        while pos < len(data) and data[pos] & 0x80:
+        length = 0
+        shift = 0
+        while pos < len(data) and shift <= 63:
+            byte = data[pos]
             pos += 1
-        pos += 1  # skip the final byte of the length varint
-    # else: try decoding from the start (no header)
+            length |= (byte & 0x7F) << shift
+            if not byte & 0x80:
+                end = pos + length
+                if end > len(data):
+                    return []
+                payload = data[pos:end]
+                break
+            shift += 7
+        else:
+            return []
 
     pixels: list[int] = []
-    while pos < len(data):
+    pos = 0
+    while pos < len(payload):
         val = 0
         shift = 0
-        while pos < len(data):
-            b = data[pos]
+        while pos < len(payload) and shift <= 63:
+            b = payload[pos]
             pos += 1
             val |= (b & 0x7F) << shift
-            shift += 7
             if not (b & 0x80):
+                pixels.append(val)
                 break
-        pixels.append(val)
+            shift += 7
+        else:
+            break
 
     return pixels
 
@@ -232,7 +248,7 @@ def _darken(color: tuple[int, int, int], amount: int = 80) -> tuple[int, int, in
 
 
 def _draw_dock(
-    draw: "ImageDraw.ImageDraw",
+    draw: ImageDraw.ImageDraw,
     dock_x: int,
     dock_y: int,
     size: int = 6,
@@ -250,7 +266,7 @@ def _draw_dock(
 
 
 def _draw_robot(
-    draw: "ImageDraw.ImageDraw",
+    draw: ImageDraw.ImageDraw,
     rx: int,
     ry: int,
     heading: float | None,
@@ -340,7 +356,10 @@ def render_map_png(
     if len(pixels) < expected:
         _LOGGER.warning(
             "Map has %d pixels, expected %d (%dx%d) — padding",
-            len(pixels), expected, width, height,
+            len(pixels),
+            expected,
+            width,
+            height,
         )
         pixels.extend([0] * (expected - len(pixels)))
     elif len(pixels) > expected:
@@ -348,6 +367,8 @@ def render_map_png(
 
     img = Image.new("RGB", (width, height), COLOR_UNKNOWN)
     px = img.load()
+    if px is None:
+        return b""
 
     # Track room pixel sums for centroid computation
     room_sum_x: dict[int, int] = {}
@@ -368,10 +389,7 @@ def render_map_png(
             room_id = val >> 8
             ptype = val & 0xFF
 
-            if 1 <= room_id <= len(ROOM_COLORS):
-                base = ROOM_COLORS[room_id - 1]
-            else:
-                base = COLOR_FALLBACK
+            base = ROOM_COLORS[room_id - 1] if 1 <= room_id <= len(ROOM_COLORS) else COLOR_FALLBACK
 
             if ptype & 0x10:  # wall/border edge
                 px[x, y] = _darken(base)
@@ -387,15 +405,16 @@ def render_map_png(
     # Flip vertically BEFORE drawing overlays — pixel data is stored with
     # Y increasing upward (math coordinates) but images render Y downward.
     # Overlays (labels, dock, robot) use flipped coordinates so text is right-side up.
-    img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
 
     draw = ImageDraw.Draw(img)
 
     # Draw room labels at flipped centroids
     if room_names:
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont
         try:
             font = ImageFont.truetype("arial.ttf", 10)
-        except (IOError, OSError):
+        except OSError:
             font = ImageFont.load_default()
         for rid, name in room_names.items():
             if not name or rid not in room_count:
@@ -438,10 +457,10 @@ def render_base_map(
     dock_x: float | None = None,
     dock_y: float | None = None,
     room_names: dict[int, str] | None = None,
-    obstacles: "list | None" = None,
+    obstacles: list[ObstacleInfo] | None = None,
     origin_x: int = 0,
     origin_y: int = 0,
-) -> "Image.Image | None":
+) -> Image.Image | None:
     """Render the static floor plan as a PIL Image (no robot overlay).
 
     Returns a PIL Image that can be cached and reused across frames.
@@ -472,6 +491,8 @@ def render_base_map(
 
     img = Image.new("RGB", (width, height), COLOR_UNKNOWN)
     px = img.load()
+    if px is None:
+        return None
 
     room_sum_x: dict[int, int] = {}
     room_sum_y: dict[int, int] = {}
@@ -491,10 +512,7 @@ def render_base_map(
             room_id = val >> 8
             ptype = val & 0xFF
 
-            if 1 <= room_id <= len(ROOM_COLORS):
-                base = ROOM_COLORS[room_id - 1]
-            else:
-                base = COLOR_FALLBACK
+            base = ROOM_COLORS[room_id - 1] if 1 <= room_id <= len(ROOM_COLORS) else COLOR_FALLBACK
 
             if ptype & 0x10:
                 px[x, y] = _darken(base)
@@ -506,13 +524,14 @@ def render_base_map(
                 room_sum_y[room_id] = room_sum_y.get(room_id, 0) + y
                 room_count[room_id] = room_count.get(room_id, 0) + 1
 
-    img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
     draw = ImageDraw.Draw(img)
 
     if room_names:
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont
         try:
             font = ImageFont.truetype("arial.ttf", 10)
-        except (IOError, OSError):
+        except OSError:
             font = ImageFont.load_default()
         for rid, name in room_names.items():
             if not name or rid not in room_count:
@@ -530,9 +549,10 @@ def render_base_map(
 
     # Draw obstacle/furniture annotations (static data from get_map field 2.32)
     if obstacles:
+        obs_font: ImageFont.FreeTypeFont | ImageFont.ImageFont
         try:
             obs_font = ImageFont.truetype("arial.ttf", 8)
-        except (IOError, OSError):
+        except OSError:
             obs_font = ImageFont.load_default()
         for obs in obstacles:
             gx, gy = obs.to_grid_coords(origin_x, origin_y)
@@ -546,7 +566,8 @@ def render_base_map(
             color = OBSTACLE_COLORS.get(obs.type_id, OBSTACLE_COLOR_DEFAULT)
             draw.rectangle(
                 [img_x - half_w, img_y - half_h, img_x + half_w, img_y + half_h],
-                outline=color, width=1,
+                outline=color,
+                width=1,
             )
             # Draw label centered above the rectangle
             label = obs.display_name
@@ -568,7 +589,7 @@ def render_base_map(
 
 
 def render_overlay(
-    base_img: "Image.Image",
+    base_img: Image.Image,
     height: int,
     robot_x: float | None = None,
     robot_y: float | None = None,
@@ -598,10 +619,7 @@ def render_overlay(
     if trail and len(trail) >= 2:
         recent_start = max(len(trail) - 200, 0)
         for i in range(len(trail) - 1):
-            if i >= recent_start:
-                color = (30, 120, 255)  # bright blue for recent
-            else:
-                color = (15, 60, 130)  # dim blue for older
+            color = (30, 120, 255) if i >= recent_start else (15, 60, 130)
             x1, y1 = int(trail[i][0]), height - 1 - int(trail[i][1])
             x2, y2 = int(trail[i + 1][0]), height - 1 - int(trail[i + 1][1])
             draw.line([(x1, y1), (x2, y2)], fill=color, width=2)
@@ -648,6 +666,13 @@ def render_map_from_compressed(
     """
     decompressed = decompress_map(compressed)
     return render_map_png(
-        decompressed, width, height, robot_x, robot_y, robot_heading,
-        dock_x, dock_y, room_names,
+        decompressed,
+        width,
+        height,
+        robot_x,
+        robot_y,
+        robot_heading,
+        dock_x,
+        dock_y,
+        room_names,
     )

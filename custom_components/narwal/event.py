@@ -42,6 +42,7 @@ class NarwalNotificationEvent(NarwalEntity, EventEntity):
         """Emit each newly fetched cloud notification once per runtime."""
         state = self.coordinator.data
         if state is not None:
+            current_ids = {item.message_id for item in state.notifications}
             unseen = [
                 item
                 for item in state.notifications
@@ -50,6 +51,7 @@ class NarwalNotificationEvent(NarwalEntity, EventEntity):
             for item in sorted(unseen, key=lambda value: value.created_at):
                 self._trigger_notification(item)
                 self._seen_ids.add(item.message_id)
+            self._seen_ids.intersection_update(current_ids)
         super()._handle_coordinator_update()
 
     def _trigger_notification(self, item: NarwalNotification) -> None:

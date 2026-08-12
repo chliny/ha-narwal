@@ -153,7 +153,12 @@ class NarwalStartCleanPlanButton(NarwalEntity, ButtonEntity):
         if plan_id is None:
             state = self.coordinator.data
             if state and state.clean_plans:
-                plan_id = int(state.clean_plans[0]["id"])
+                raw_plan_id = state.clean_plans[0].get("id")
+                if not isinstance(raw_plan_id, bool):
+                    try:
+                        plan_id = int(raw_plan_id)
+                    except (TypeError, ValueError):
+                        plan_id = None
         if plan_id is None:
             raise HomeAssistantError("No saved Narwal cleaning plan is available")
         response = await self._async_await_command(

@@ -293,6 +293,15 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                     "Optional Narwal feature query %s is unsupported or unavailable",
                     call.__name__,
                 )
+        if include_static and self._extended_refresh_count > 0:
+            try:
+                self.device_config = await self.client.get_config()
+                self._config_discovery_complete = True
+            except Exception:
+                _LOGGER.debug(
+                    "Could not refresh Narwal device configuration",
+                    exc_info=True,
+                )
         if include_static and self.client.state.current_voice.get("language"):
             try:
                 await self.client.get_voice_packs(
@@ -334,7 +343,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         was_cleaning = self._prev_working_status.is_cleaning_task
         if now_idle_or_station and was_cleaning:
             _LOGGER.info("Return-to-dock detected, refreshing dock status")
-            self.hass.async_create_task(self._refresh_dock_status())
+            self.config_entry.async_create_background_task(
+                self.hass,
+                self._refresh_dock_status(),
+                f"{DOMAIN}_dock_refresh",
+            )
         self._prev_working_status = state.working_status
 
         # Renew cloud status publication if live map updates stop mid-clean.

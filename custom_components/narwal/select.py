@@ -47,20 +47,18 @@ async def async_setup_entry(
 ) -> None:
     """Set up Narwal cleaning preference selects."""
     coordinator = entry.runtime_data
-    translations = await async_get_translations(
-        hass, hass.config.language, "selector", {DOMAIN}
-    )
+    translations = await async_get_translations(hass, hass.config.language, "selector", {DOMAIN})
     known: set[str] = set()
 
     def _add_supported() -> None:
         entities: list[tuple[str, SelectEntity]] = []
-        if coordinator.supports_mop_humidity:
+        if coordinator.supports_mop_humidity and "mop_humidity" not in known:
             entities.append(("mop_humidity", NarwalMopHumiditySelect(coordinator)))
-        if coordinator.supports_clean_strategy:
+        if coordinator.supports_clean_strategy and "clean_strategy" not in known:
             entities.append(("clean_strategy", NarwalCleanStrategySelect(coordinator)))
-        if coordinator.supports_dry_mop_strength:
+        if coordinator.supports_dry_mop_strength and "dry_mop_strength" not in known:
             entities.append(("dry_mop_strength", NarwalDryMopStrengthSelect(coordinator)))
-        if coordinator.data and coordinator.data.clean_plans:
+        if coordinator.data and coordinator.data.clean_plans and "clean_plan" not in known:
             entities.append(
                 (
                     "clean_plan",
@@ -71,18 +69,19 @@ async def async_setup_entry(
             coordinator.data
             and coordinator.data.saved_maps_supported
             and len(coordinator.data.saved_maps) > 1
+            and "map" not in known
         ):
             entities.append(("map", NarwalMapSelect(coordinator)))
         if (
             coordinator.data
             and coordinator.data.voice_packs_supported
             and coordinator.data.voice_packs
+            and "voice_pack" not in known
         ):
             entities.append(("voice_pack", NarwalVoicePackSelect(coordinator)))
-        new = [entity for key, entity in entities if key not in known]
         known.update(key for key, _entity in entities)
-        if new:
-            async_add_entities(new)
+        if entities:
+            async_add_entities([entity for _key, entity in entities])
 
     _add_supported()
     entry.async_on_unload(coordinator.async_add_listener(_add_supported))
@@ -225,11 +224,23 @@ def _named_options(values: list[dict[str, object]], id_key: str = "id") -> dict[
     """Build stable, unique select labels from app-provided names."""
     result: dict[str, int] = {}
     for value in values:
-        item_id = int(str(value.get(id_key) or 0))
+        item_id = _optional_int(value.get(id_key))
+        if item_id is None:
+            continue
         name = str(value.get("name") or item_id)
         label = name if name not in result else f"{name} ({item_id})"
         result[label] = item_id
     return result
+
+
+def _optional_int(value: object) -> int | None:
+    """Return an integer for a cloud option ID without accepting booleans."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _clean_plan_options(
@@ -240,8 +251,7 @@ def _clean_plan_options(
     for value in values:
         plan = dict(value)
         if not plan.get("name"):
-            clean_mode_value = plan.get("clean_mode")
-            clean_mode = int(str(clean_mode_value if clean_mode_value is not None else -1))
+            clean_mode = _optional_int(plan.get("clean_mode"))
             translation_key = CLEAN_PLAN_MODE_TRANSLATION_KEYS.get(clean_mode)
             translated_name = (
                 translations.get(
@@ -250,7 +260,10 @@ def _clean_plan_options(
                 if translation_key
                 else None
             )
-            plan["name"] = translated_name or f"Cleaning plan {plan['id']}"
+            plan_id = _optional_int(plan.get("id"))
+            plan["name"] = translated_name or (
+                f"Cleaning plan {plan_id}" if plan_id is not None else "Cleaning plan"
+            )
         named_values.append(plan)
     return _named_options(named_values)
 
@@ -261,9 +274,7 @@ class NarwalCleanPlanSelect(NarwalEntity, SelectEntity):
     _attr_translation_key = "clean_plan"
     _attr_icon = "mdi:calendar-check"
 
-    def __init__(
-        self, coordinator: NarwalCoordinator, translations: dict[str, str]
-    ) -> None:
+    def __init__(self, coordinator: NarwalCoordinator, translations: dict[str, str]) -> None:
         super().__init__(coordinator)
         self._set_entity_identity("select", "clean_plan")
         self._translations = translations

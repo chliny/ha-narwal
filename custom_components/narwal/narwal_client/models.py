@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import math
 import struct
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -10,6 +12,16 @@ from typing import Any, ClassVar
 from .const import CommandResult, WorkingStatus
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _int_or_default(value: Any, default: int = 0) -> int:
+    """Convert an untrusted protocol value to an integer fallback."""
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass
@@ -45,7 +57,24 @@ class RoomInfo:
     model_key: str = ""  # product_key — selects per-model name overrides
 
     # ROOM_TYPE enum → default display name
-    ROOM_TYPE_NAMES: dict[int, str] = field(default=None, repr=False)
+    ROOM_TYPE_NAMES: ClassVar[dict[int, str]] = {
+        0: "Room",
+        1: "Primary Bedroom",
+        2: "Secondary Bedroom",
+        3: "Living Room",
+        4: "Kitchen",
+        5: "Study",
+        6: "Bathroom",
+        7: "Dining Room",
+        8: "Corridor",
+        9: "Balcony",
+        10: "Utility Room",
+        11: "Cloak Room",
+        12: "Nursery",
+        13: "Recreation Room",
+        14: "Shower Room",
+        15: "Other",
+    }
 
     # Per-model overrides where Narwal renamed sub-types between models.
     # Confirmed on Narwal Flow 2 (QxMSPG6VSO, firmware v01.07.16.01) — see #22.
@@ -56,31 +85,6 @@ class RoomInfo:
             10: "Corridor",
         },
     }
-
-    def __post_init__(self):
-        if self.ROOM_TYPE_NAMES is None:
-            object.__setattr__(
-                self,
-                "ROOM_TYPE_NAMES",
-                {
-                    0: "Room",
-                    1: "Primary Bedroom",
-                    2: "Secondary Bedroom",
-                    3: "Living Room",
-                    4: "Kitchen",
-                    5: "Study",
-                    6: "Bathroom",
-                    7: "Dining Room",
-                    8: "Corridor",
-                    9: "Balcony",
-                    10: "Utility Room",
-                    11: "Cloak Room",
-                    12: "Nursery",
-                    13: "Recreation Room",
-                    14: "Shower Room",
-                    15: "Other",
-                },
-            )
 
     @property
     def display_name(self) -> str:
@@ -191,11 +195,14 @@ def _to_float32(val: Any) -> float | None:
       - Python int (raw uint32 bit pattern)
     Handle both cases.
     """
+    if isinstance(val, bool):
+        return None
     if isinstance(val, float):
-        return val
+        return val if math.isfinite(val) else None
     if isinstance(val, int):
         try:
-            return struct.unpack("f", struct.pack("I", val & 0xFFFFFFFF))[0]
+            result = struct.unpack("f", struct.pack("I", val & 0xFFFFFFFF))[0]
+            return result if math.isfinite(result) else None
         except struct.error:
             return None
     return None
@@ -203,11 +210,14 @@ def _to_float32(val: Any) -> float | None:
 
 def _to_float64(val: Any) -> float | None:
     """Convert a schema-less protobuf fixed64 value to a double."""
+    if isinstance(val, bool):
+        return None
     if isinstance(val, float):
-        return val
+        return val if math.isfinite(val) else None
     if isinstance(val, int):
         try:
-            return struct.unpack("<d", struct.pack("<Q", val & 0xFFFFFFFFFFFFFFFF))[0]
+            result = struct.unpack("<d", struct.pack("<Q", val & 0xFFFFFFFFFFFFFFFF))[0]
+            return result if math.isfinite(result) else None
         except struct.error:
             return None
     return None
@@ -283,8 +293,8 @@ class MapData:
             product_key: Device product key — propagated to RoomInfo so model-
                 specific room-type name overrides apply (see #22 for Flow 2).
         """
-        payload = decoded.get("2", {})
-        if not payload:
+        payload = decoded.get("2")
+        if not isinstance(payload, dict) or not payload:
             return cls()
 
         rooms = []
@@ -305,11 +315,11 @@ class MapData:
                     name = str(name_raw)
                 rooms.append(
                     RoomInfo(
-                        room_id=int(room.get("1", 0)),
+                        room_id=_int_or_default(room.get("1")),
                         name=name,
-                        room_sub_type=int(room.get("2", 0)),
-                        category=int(room.get("4", 0)),
-                        instance_index=int(room.get("8", 0)),
+                        room_sub_type=_int_or_default(room.get("2")),
+                        category=_int_or_default(room.get("4")),
+                        instance_index=_int_or_default(room.get("8")),
                         model_key=product_key,
                     )
                 )
@@ -318,7 +328,7 @@ class MapData:
         if isinstance(compressed, str):
             compressed = compressed.encode("latin-1")
 
-        resolution = int(payload.get("3", 0))
+        resolution = _int_or_default(payload.get("3"))
 
         # Extract origin offsets from field 6 (coordinate transform).
         # Field 6: {1: origin_y, 2: ?, 3: origin_x, 4: resolution}
@@ -327,14 +337,8 @@ class MapData:
         origin_y = 0
         field6 = payload.get("6")
         if isinstance(field6, dict):
-            try:
-                origin_x = int(field6.get("3", 0))
-            except (ValueError, TypeError):
-                pass
-            try:
-                origin_y = int(field6.get("1", 0))
-            except (ValueError, TypeError):
-                pass
+            origin_x = _int_or_default(field6.get("3"))
+            origin_y = _int_or_default(field6.get("1"))
 
         # Parse dock position from field 8 (dock/charging station location).
         # Field 8 structure: {1: {1: x_dm, 2: y_dm}, 2: heading_rad}
@@ -363,13 +367,13 @@ class MapData:
             obstacles = _parse_obstacles(field32)
 
         return cls(
-            width=int(payload.get("4", 0)),
-            height=int(payload.get("5", 0)),
+            width=_int_or_default(payload.get("4")),
+            height=_int_or_default(payload.get("5")),
             resolution=resolution,
             rooms=rooms,
             compressed_map=compressed if isinstance(compressed, bytes) else b"",
-            area=int(payload.get("33", 0)),
-            created_at=int(payload.get("34", 0)),
+            area=_int_or_default(payload.get("33")),
+            created_at=_int_or_default(payload.get("34")),
             dock_x=dock_x,
             dock_y=dock_y,
             origin_x=origin_x,
@@ -472,10 +476,8 @@ class MapDisplayData:
 
         # Timestamp — field 10 (milliseconds since epoch)
         if "10" in decoded:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 result.timestamp = int(decoded["10"])
-            except (ValueError, TypeError):
-                pass
 
         return result
 
@@ -593,6 +595,7 @@ class NarwalState:
     task_records_supported: bool = False
     task_records_map_id: int | None = None
     dust_bag_health: list[dict[str, Any]] = field(default_factory=list)
+    dust_bag_health_current: dict[str, Any] = field(default_factory=dict)
     dust_bag_health_supported: bool = False
 
     # Optional MQTT features. A corresponding ``*_supported`` flag becomes
@@ -713,9 +716,7 @@ class NarwalState:
             return True
         if self.dock_field11 >= 2:
             return True
-        if self.dock_field47 in (1, 3):
-            return True
-        return False
+        return self.dock_field47 in (1, 3)
 
     @property
     def is_returning(self) -> bool:
@@ -747,10 +748,8 @@ class NarwalState:
         """
         self.raw_working_status = decoded
         if "3" in decoded:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 self.cleaning_time = int(decoded["3"])
-            except (ValueError, TypeError):
-                pass
         if "2" in decoded:
             area = _to_float64(decoded["2"])
             if area is not None:
@@ -840,21 +839,9 @@ class NarwalState:
                 self.idle_status = self.task_sub_status
             self.is_paused = False
             self.is_returning_to_dock = self.is_returning
-            if "10" in field3:
-                try:
-                    self.dock_sub_state = int(field3["10"])
-                except (ValueError, TypeError):
-                    pass
-            if "12" in field3:
-                try:
-                    self.dock_activity = int(field3["12"])
-                except (ValueError, TypeError):
-                    pass
-            if "3" in field3:
-                try:
-                    self.dock_presence = int(field3["3"])
-                except (ValueError, TypeError):
-                    pass
+            self.dock_sub_state = _int_or_default(field3.get("10"))
+            self.dock_activity = _int_or_default(field3.get("12"))
+            self.dock_presence = _int_or_default(field3.get("3"))
             # Log unrecognized sub-fields for future firmware mapping
             _known_f3 = {"1", "2", "3", "7", "10", "12"}
             _unknown_f3 = set(field3.keys()) - _known_f3
@@ -872,13 +859,13 @@ class NarwalState:
             # Field 2 = real-time battery SOC as float32
             # (e.g. 1118175232 → 83.0%; bbp may return int or float)
             bat = _to_float32(decoded["2"])
-            if bat is not None:
+            if bat is not None and math.isfinite(bat) and 0 <= bat <= 100:
                 self.battery_level = round(bat)
         if "38" in decoded:
             # Field 38 = static battery health (always 100, design capacity)
-            self.battery_health = int(decoded["38"])
+            self.battery_health = _int_or_default(decoded["38"], self.battery_health)
         if "36" in decoded:
-            self.timestamp = int(decoded["36"])
+            self.timestamp = _int_or_default(decoded["36"], self.timestamp)
         if "13" in decoded:
             raw = decoded["13"]
             if isinstance(raw, bytes):
@@ -899,12 +886,12 @@ class NarwalState:
         self.raw_base_status = decoded
         if "2" in decoded:
             bat = _to_float32(decoded["2"])
-            if bat is not None:
+            if bat is not None and math.isfinite(bat) and 0 <= bat <= 100:
                 self.battery_level = round(bat)
         if "38" in decoded:
-            self.battery_health = int(decoded["38"])
+            self.battery_health = _int_or_default(decoded["38"], self.battery_health)
         if "36" in decoded:
-            self.timestamp = int(decoded["36"])
+            self.timestamp = _int_or_default(decoded["36"], self.timestamp)
 
     def update_from_upgrade_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded upgrade_status message."""

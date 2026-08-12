@@ -60,6 +60,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         | VacuumEntityFeature.RETURN_HOME
         | VacuumEntityFeature.LOCATE
     ) | (VacuumEntityFeature.CLEAN_AREA if Segment is not None else VacuumEntityFeature(0))
+
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         """Initialize the vacuum entity."""
         super().__init__(coordinator)
@@ -84,8 +85,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         """Raise a safe HA error when the robot rejects an action."""
         if not response.success:
             raise HomeAssistantError(
-                f"Narwal {action} failed with result code "
-                f"{response.result_code}"
+                f"Narwal {action} failed with result code {response.result_code}"
             )
 
     async def _async_refresh_after_write(self) -> None:
@@ -116,10 +116,10 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         # An unknown status isn't evidence that the robot is cleaning. This
         # commonly occurs when a cloud-connected robot hasn't responded yet.
         if not state.is_docked:
-            _LOGGER.warning(
-                "Unmapped robot status/task type %s (%d) while off-dock; "
-                "reporting IDLE",
-                state.working_status.name, state.working_status.value,
+            _LOGGER.debug(
+                "Unmapped robot status/task type %s (%d) while off-dock; reporting IDLE",
+                state.working_status.name,
+                state.working_status.value,
             )
             return VacuumActivity.IDLE
         return VacuumActivity.IDLE
@@ -186,9 +186,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
     async def async_return_to_base(self, **kwargs) -> None:
         """Return to the dock."""
         response = await self._async_await_command(
-            self.coordinator.client.return_to_base(
-                timeout=self._ACTION_TIMEOUT
-            ),
+            self.coordinator.client.return_to_base(timeout=self._ACTION_TIMEOUT),
             "return-to-base",
         )
         self._require_success(response, "return-to-base")
@@ -246,15 +244,20 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             if room.room_id > 0
         ]
 
-    async def async_clean_segments(
-        self, segment_ids: list[str], **kwargs: Any
-    ) -> None:
+    async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
         """Clean specific rooms by segment IDs.
 
         Converts string segment IDs back to integer room IDs and sends
         a room-specific clean command to the robot.
         """
-        room_ids = [int(sid) for sid in segment_ids]
+        if not segment_ids:
+            raise HomeAssistantError("Select at least one Narwal room to clean")
+        try:
+            room_ids = list(dict.fromkeys(int(segment_id) for segment_id in segment_ids))
+        except (TypeError, ValueError) as err:
+            raise HomeAssistantError("Narwal room IDs must be integers") from err
+        if any(room_id <= 0 for room_id in room_ids):
+            raise HomeAssistantError("Narwal room IDs must be positive integers")
         _LOGGER.info("Starting room-specific clean: rooms=%s", room_ids)
         response = await self._async_await_command(
             self.coordinator.client.start_rooms(room_ids),
@@ -293,14 +296,13 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         if state is None or state.map_data is None:
             return
         current_set = {
-            (str(r.room_id), r.display_name)
-            for r in state.map_data.rooms
-            if r.room_id > 0
+            (str(r.room_id), r.display_name) for r in state.map_data.rooms if r.room_id > 0
         }
         last_set = {(s.id, s.name) for s in last}
         if current_set != last_set:
             _LOGGER.info(
                 "Segment change detected: %d -> %d rooms",
-                len(last_set), len(current_set),
+                len(last_set),
+                len(current_set),
             )
             self.async_create_segments_issue()

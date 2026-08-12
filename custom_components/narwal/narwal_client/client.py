@@ -100,16 +100,17 @@ class NarwalClient:
             return 999.0
         return time.monotonic() - self._last_display_map_time
 
-    async def _handle_broadcast(self, short_topic: str, payload: bytes) -> None:
-        """Decode a cloud broadcast and apply it to the shared state."""
+    async def _handle_broadcast(self, short_topic: str, payload: bytes) -> bool:
+        """Decode a cloud broadcast and return whether it changed known state."""
         self._last_broadcast_time = time.monotonic()
         self._robot_awake = True
         try:
             decoded = self._decode_protobuf(payload)
         except Exception:
             _LOGGER.debug("Failed to decode protobuf for topic %s", short_topic)
-            return
+            return False
 
+        handled = True
         if short_topic == "status/working_status":
             self.state.update_from_working_status(decoded)
         elif short_topic == "status/robot_base_status":
@@ -123,9 +124,12 @@ class NarwalClient:
             self._last_display_map_time = time.monotonic()
         elif short_topic == "status/time_line_status":
             self._update_clean_timeline(decoded)
+        else:
+            handled = False
 
-        if self.on_state_update is not None:
+        if handled and self.on_state_update is not None:
             self.on_state_update(self.state)
+        return handled
 
     @staticmethod
     def _decode_protobuf(payload: bytes) -> dict[str, Any]:
@@ -133,7 +137,7 @@ class NarwalClient:
         import blackboxprotobuf
 
         decoded, _ = blackboxprotobuf.decode_message(payload)
-        return decoded
+        return {str(key): value for key, value in decoded.items()}
 
     @staticmethod
     def _encode_varint(value: int) -> bytes:
@@ -275,7 +279,7 @@ class NarwalClient:
                 "3": {"type": "int"},
             },
         }
-        message = {
+        message: dict[str | int, Any] = {
             "1": {
                 "1": 1,
                 "2": clean_items if len(clean_items) > 1 else clean_items[0],
@@ -283,7 +287,7 @@ class NarwalClient:
                 "5": 6,
             }
         }
-        typedef = {
+        typedef: Any = {
             "1": {
                 "type": "message",
                 "message_typedef": {
@@ -324,7 +328,7 @@ class NarwalClient:
                 "7": {"type": "int"},
             },
         }
-        message = {
+        message: dict[str | int, Any] = {
             "1": {
                 "2": room_entries if len(room_entries) > 1 else room_entries[0],
                 "5": {
@@ -333,7 +337,7 @@ class NarwalClient:
                 },
             }
         }
-        typedef = {
+        typedef: Any = {
             "1": {
                 "type": "message",
                 "message_typedef": {
@@ -477,9 +481,7 @@ class NarwalClient:
             self._encode_varint_field(1, max(0, min(100, int(percentage)))),
         )
 
-    async def set_boolean_config(
-        self, set_field: int, enabled: bool
-    ) -> CommandResponse:
+    async def set_boolean_config(self, set_field: int, enabled: bool) -> CommandResponse:
         """Set one boolean SetConfig field recovered from the Android app."""
         return await self.send_command(
             TOPIC_CMD_SET_CONFIG,

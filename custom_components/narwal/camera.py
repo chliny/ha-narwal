@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import io
 import logging
 import math
@@ -60,9 +62,11 @@ class NarwalMapCamera(NarwalEntity, Camera):
         self._cache_key: tuple = ()
         self._last_render_time: float = 0.0
         self._render_count: int = 0
+        self._render_task: asyncio.Task[None] | None = None
+        self._pending_render: tuple[object | None, tuple] | None = None
         # Cached base map (PIL Image) — only re-rendered when static map changes
         self._base_map_image = None  # PIL Image or None
-        self._base_map_ts: int = 0  # created_at of the static map used for base
+        self._base_map_source = None
         # Trail state — accumulated grid-coordinate positions during cleaning
         self._trail: list[tuple[float, float]] = []
         self._last_trail_record: float = 0.0
@@ -76,7 +80,9 @@ class NarwalMapCamera(NarwalEntity, Camera):
         self._vp_initialized: bool = False
 
     async def async_camera_image(
-        self, width: int | None = None, height: int | None = None,
+        self,
+        width: int | None = None,
+        height: int | None = None,
     ) -> bytes | None:
         """Return the latest map image as PNG (for snapshot/polling clients)."""
         return self._cached_image
@@ -86,20 +92,16 @@ class NarwalMapCamera(NarwalEntity, Camera):
         from homeassistant.components.camera import async_get_still_stream
 
         return await async_get_still_stream(
-            request, self.async_camera_image, "image/png", _MIN_RENDER_INTERVAL,
+            request,
+            self.async_camera_image,
+            "image/png",
+            _MIN_RENDER_INTERVAL,
         )
 
     @property
     def extra_state_attributes(self) -> dict[str, str | int]:
         """Expose render count so HA detects state changes for MJPEG refresh."""
         return {"render_count": self._render_count}
-
-    def _reset_debug_trail(self) -> None:
-        """Clear trail and viewport for a new cleaning session."""
-        self._trail.clear()
-        self._dock_pos = None
-        self._vp_initialized = False
-        self._last_trail_record = 0.0
 
     def _record_debug_position(self, x: float, y: float) -> None:
         """Record a position and expand viewport bounds."""
@@ -135,6 +137,8 @@ class NarwalMapCamera(NarwalEntity, Camera):
     def _reset_trail(self) -> None:
         """Clear trail for a new cleaning session."""
         self._trail.clear()
+        self._dock_pos = None
+        self._vp_initialized = False
         self._last_trail_record = 0.0
 
     def _record_trail_position(self, grid_x: float, grid_y: float) -> None:
@@ -179,23 +183,26 @@ class NarwalMapCamera(NarwalEntity, Camera):
             # Record trail in grid coordinates
             if display and not (display.robot_x == 0.0 and display.robot_y == 0.0):
                 grid_pos = display.to_grid_coords(
-                    static_map.resolution, static_map.origin_x, static_map.origin_y,
+                    static_map.resolution,
+                    static_map.origin_x,
+                    static_map.origin_y,
                 )
                 if grid_pos is not None:
                     self._record_trail_position(grid_pos[0], grid_pos[1])
 
             static_ts = static_map.created_at or 0
+            static_key = (state.current_map_id, static_ts, id(static_map))
             trail_len = len(self._trail)
             if display:
                 new_key = (
-                    static_ts,
+                    static_key,
                     display.robot_x,
                     display.robot_y,
                     display.robot_heading,
                     trail_len,
                 )
             else:
-                new_key = (static_ts,)
+                new_key = (static_key,)
 
         now = time.monotonic()
         since_render = now - self._last_render_time if self._last_render_time else 999
@@ -204,11 +211,44 @@ class NarwalMapCamera(NarwalEntity, Camera):
             self.async_write_ha_state()
             return
 
+        if self._render_task is not None and not self._render_task.done():
+            self._pending_render = (display, new_key)
+            return
+
         if self._cached_image and since_render < _MIN_RENDER_INTERVAL:
             self.async_write_ha_state()
             return
 
-        self.hass.async_create_task(self._async_render(display, new_key))
+        self._pending_render = (display, new_key)
+        self._render_task = self.hass.async_create_task(
+            self._async_render_pending(),
+            "narwal_map_render",
+        )
+
+    async def _async_render_pending(self) -> None:
+        """Render the newest frame serially, collapsing intermediate updates."""
+        try:
+            while self._pending_render is not None:
+                display, new_key = self._pending_render
+                self._pending_render = None
+                if new_key == self._cache_key and self._cached_image:
+                    continue
+                if self._cached_image and self._last_render_time:
+                    delay = _MIN_RENDER_INTERVAL - (time.monotonic() - self._last_render_time)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                await self._async_render(display, new_key)
+        finally:
+            self._render_task = None
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel pending map work when the entity is unloaded."""
+        self._pending_render = None
+        if self._render_task is not None and not self._render_task.done():
+            self._render_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._render_task
+        await super().async_will_remove_from_hass()
 
     async def _async_render(self, display, new_key) -> None:
         """Render the map image in an executor thread."""
@@ -218,8 +258,10 @@ class NarwalMapCamera(NarwalEntity, Camera):
             viewport = None
             if self._vp_initialized:
                 viewport = (
-                    self._vp_min_x, self._vp_min_y,
-                    self._vp_max_x, self._vp_max_y,
+                    self._vp_min_x,
+                    self._vp_min_y,
+                    self._vp_max_x,
+                    self._vp_max_y,
                 )
             try:
                 png_bytes = await self.hass.async_add_executor_job(
@@ -252,12 +294,10 @@ class NarwalMapCamera(NarwalEntity, Camera):
 
         # Rebuild base map only when static map data changes
         static_ts = static_map.created_at or 0
-        if self._base_map_image is None or static_ts != self._base_map_ts:
+        if self._base_map_image is None or static_map is not self._base_map_source:
             room_names: dict[int, str] | None = None
             if static_map.rooms:
-                room_names = {
-                    r.room_id: r.display_name for r in static_map.rooms
-                }
+                room_names = {r.room_id: r.display_name for r in static_map.rooms}
             base_img = await self.hass.async_add_executor_job(
                 render_base_map,
                 static_map.compressed_map,
@@ -272,7 +312,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
             )
             if base_img:
                 self._base_map_image = base_img
-                self._base_map_ts = static_ts
+                self._base_map_source = static_map
                 _LOGGER.info(
                     "Base map rendered (ts=%d, %dx%d)",
                     static_ts,
@@ -289,7 +329,9 @@ class NarwalMapCamera(NarwalEntity, Camera):
         robot_heading = None
         if display:
             grid_pos = display.to_grid_coords(
-                static_map.resolution, static_map.origin_x, static_map.origin_y,
+                static_map.resolution,
+                static_map.origin_x,
+                static_map.origin_y,
             )
             if grid_pos is not None:
                 robot_x, robot_y = grid_pos
@@ -390,11 +432,7 @@ def _render_debug_view(
 
         recent_start = max(len(render_trail) - 200, 0)
         for i in range(len(render_trail) - 1):
-            color = (
-                (30, 120, 255)
-                if i >= recent_start
-                else (15, 60, 130)
-            )
+            color = (30, 120, 255) if i >= recent_start else (15, 60, 130)
             x1, y1 = to_px(render_trail[i][0], render_trail[i][1])
             x2, y2 = to_px(render_trail[i + 1][0], render_trail[i + 1][1])
             draw.line([(x1, y1), (x2, y2)], fill=color, width=2)

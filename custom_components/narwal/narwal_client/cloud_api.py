@@ -6,17 +6,19 @@ Android app 2.6.90.  Callers must never log request bodies or response tokens.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from aiohttp import ClientError, ClientResponseError, ClientSession
+from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout
 
 from .models import ConsumableInfo, NarwalNotification
 
 APP_VERSION = "2.6.90"
 VERSION_CODE = "2137"
 DEFAULT_BASE_URL = "https://cn-app.narwaltech.com"
+REQUEST_TIMEOUT = ClientTimeout(total=25)
 
 
 class NarwalCloudError(Exception):
@@ -77,6 +79,7 @@ class NarwalCloudApi:
         self._country_code = country_code.upper()
         self._base_url = base_url.rstrip("/")
         self.account: CloudAccount | None = None
+        self._login_lock = asyncio.Lock()
 
     def _headers(
         self,
@@ -115,7 +118,48 @@ class NarwalCloudApi:
         device_id: str = "",
         product_id: str = "",
         accepted_codes: frozenset[str] = frozenset({"0"}),
+        _retry_auth: bool = True,
     ) -> Any:
+        if self.account is None and not path.endswith("/loginByPw"):
+            await self._ensure_login()
+        failed_account = self.account
+        try:
+            return await self._request_once(
+                method,
+                path,
+                json=json,
+                params=params,
+                device_id=device_id,
+                product_id=product_id,
+                accepted_codes=accepted_codes,
+            )
+        except NarwalCloudAuthError:
+            if not _retry_auth or failed_account is None or path.endswith("/loginByPw"):
+                raise
+            await self._refresh_login(failed_account)
+            return await self._request(
+                method,
+                path,
+                json=json,
+                params=params,
+                device_id=device_id,
+                product_id=product_id,
+                accepted_codes=accepted_codes,
+                _retry_auth=False,
+            )
+
+    async def _request_once(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None,
+        params: dict[str, str] | None,
+        device_id: str,
+        product_id: str,
+        accepted_codes: frozenset[str],
+    ) -> Any:
+        """Perform one request without recursively refreshing credentials."""
         try:
             async with self._session.request(
                 method,
@@ -126,7 +170,7 @@ class NarwalCloudApi:
                     device_id=device_id,
                     product_id=product_id,
                 ),
-                timeout=25,
+                timeout=REQUEST_TIMEOUT,
             ) as response:
                 response.raise_for_status()
                 body = await response.json(content_type=None)
@@ -139,13 +183,28 @@ class NarwalCloudApi:
 
         if not isinstance(body, dict):
             raise NarwalCloudError("Narwal cloud returned an invalid response")
-        code = body.get("code")
-        if str(code) not in accepted_codes:
-            if path.endswith("/loginByPw") or str(code) in {"401", "403"}:
+        code = str(body.get("code"))
+        normalized_code = "0" if code and set(code) == {"0"} else code
+        if code not in accepted_codes and normalized_code not in accepted_codes:
+            if path.endswith("/loginByPw") or code in {"401", "403"}:
                 raise NarwalCloudAuthError("Narwal cloud rejected authentication")
             raise NarwalCloudError(f"Narwal cloud rejected request (code={code})")
         result = body.get("result")
         return body.get("data") if result is None and "data" in body else result
+
+    async def _refresh_login(self, failed_account: CloudAccount) -> None:
+        """Refresh an expired account once across concurrent HTTP requests."""
+        async with self._login_lock:
+            if self.account is not failed_account:
+                return
+            self.account = None
+            await self.login()
+
+    async def _ensure_login(self) -> None:
+        """Authenticate once when concurrent callers observe no account."""
+        async with self._login_lock:
+            if self.account is None:
+                await self.login()
 
     async def login(self) -> CloudAccount:
         """Authenticate with the same password flow used by the Android app."""
@@ -235,6 +294,7 @@ class NarwalCloudApi:
             device_id=device_id,
             product_id=product_id,
         )
+        values: list[Any]
         if isinstance(result, dict):
             values = next(
                 (
@@ -312,7 +372,7 @@ class NarwalCloudApi:
                     title=str(value.get("msg_title") or ""),
                     content=str(value.get("msg_content") or ""),
                     created_at=_as_int(value.get("created_time")),
-                    is_read=bool(value.get("is_read", False)),
+                    is_read=_as_bool(value.get("is_read", False)),
                     device_id=str(value.get("device_id") or device_id),
                 )
             )
@@ -495,6 +555,27 @@ class NarwalCloudApi:
             else (result.get("list", []) if isinstance(result, dict) else [])
         )
         return [item for item in values if isinstance(item, dict)]
+
+    async def dust_bag_health_current(
+        self,
+        *,
+        device_id: str,
+        product_id: str,
+    ) -> dict[str, Any] | None:
+        """Return current dust-bag health and remaining days."""
+        if self.account is None:
+            await self.login()
+        result = await self._request(
+            "GET",
+            "/clean-record-app-server/v1/baseStation/getDustBagHealthDegreeAndDay",
+            params={
+                "device_id": device_id,
+                "product_id": product_id,
+            },
+            device_id=device_id,
+            product_id=product_id,
+        )
+        return result if isinstance(result, dict) else None
 
     async def voice_packs(
         self,

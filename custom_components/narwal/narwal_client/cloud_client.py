@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 import paho.mqtt.client as mqtt
 from aiohttp import ClientSession
+from paho.mqtt import MQTTException
 
 from .client import (
     NarwalAuthenticationError,
@@ -92,6 +93,7 @@ def _protobuf_fields(data: bytes) -> dict[int, list[int | bytes]]:
     while offset < len(data):
         key, offset = _read_varint(data, offset)
         number, wire_type = key >> 3, key & 7
+        value: int | bytes
         if wire_type == 0:
             value, offset = _read_varint(data, offset)
         elif wire_type == 2:
@@ -260,7 +262,13 @@ class NarwalCloudClient(NarwalClient):
         if task_records_map_id != self.state.task_records_map_id:
             # Populate multiple pages immediately after setup or a map switch.
             task_record_pages = max(task_record_pages, 3)
-        consumables, notifications, task_records, dust_bag_health = await asyncio.gather(
+        (
+            consumables,
+            notifications,
+            task_records,
+            dust_bag_health,
+            dust_bag_health_current,
+        ) = await asyncio.gather(
             self._api.consumables(
                 device_id=device.device_id,
                 product_id=device.product_id,
@@ -277,6 +285,10 @@ class NarwalCloudClient(NarwalClient):
                 record_limit=_TASK_RECORD_CACHE_LIMIT,
             ),
             self._api.dust_bag_health(
+                device_id=device.device_id,
+                product_id=device.product_id,
+            ),
+            self._api.dust_bag_health_current(
                 device_id=device.device_id,
                 product_id=device.product_id,
             ),
@@ -331,9 +343,18 @@ class NarwalCloudClient(NarwalClient):
         else:
             self.state.dust_bag_health_supported = True
             self.state.dust_bag_health = dust_bag_health
+        if isinstance(dust_bag_health_current, BaseException):
+            errors.append(dust_bag_health_current)
+            _LOGGER.debug(
+                "Narwal current dust-bag health refresh failed: %s",
+                dust_bag_health_current,
+            )
+        else:
+            self.state.dust_bag_health_supported = True
+            self.state.dust_bag_health_current = dust_bag_health_current or {}
         if any(isinstance(error, NarwalCloudAuthError) for error in errors):
             raise NarwalAuthenticationError("Narwal cloud credentials were rejected")
-        if len(errors) == 4:
+        if len(errors) == 5:
             raise NarwalConnectionError("Cannot refresh Narwal cloud metadata") from errors[0]
 
     async def get_firmware_update(self) -> None:
@@ -421,7 +442,9 @@ class NarwalCloudClient(NarwalClient):
         """Login, discover the broker, and open MQTT5 over TLS."""
         if self.connected:
             return
+        await self._async_discard_stale_mqtt()
         self._loop = asyncio.get_running_loop()
+        self._mqtt_ready.clear()
         self._disconnect_waiter.clear()
         self._connect_error = None
         self._response_topics.clear()
@@ -444,7 +467,7 @@ class NarwalCloudClient(NarwalClient):
         host = parsed.hostname or broker_url.removeprefix("mqtts://")
         client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
-            client_id=f"app_{account.uuid}_{uuid.uuid1()}",
+            client_id=f"app_{account.uuid}_{uuid.uuid4()}",
             protocol=mqtt.MQTTv5,
         )
         client.username_pw_set(account.uuid, account.token)
@@ -475,11 +498,12 @@ class NarwalCloudClient(NarwalClient):
         except (
             OSError,
             TimeoutError,
-            mqtt.MQTTException,
+            MQTTException,
             NarwalConnectionError,
         ) as err:
             client.loop_stop()
             self._mqtt = None
+            self._mqtt_ready.clear()
             if isinstance(err, NarwalConnectionError):
                 raise
             raise NarwalConnectionError("Cannot connect to the Narwal MQTT broker") from err
@@ -527,11 +551,7 @@ class NarwalCloudClient(NarwalClient):
         loop = self._loop
         if loop is None or mid != self._subscribe_mid:
             return
-        rejected = [
-            int(getattr(code, "value", code))
-            for code in reason_codes
-            if int(getattr(code, "value", code)) >= 128
-        ]
+        rejected = [int(code.value) for code in reason_codes if int(code.value) >= 128]
         if rejected:
             loop.call_soon_threadsafe(
                 self._fail_connect,
@@ -604,11 +624,7 @@ class NarwalCloudClient(NarwalClient):
     ) -> None:
         self._mark_robot_reachable()
         pending = self._pending.get(correlation)
-        future = (
-            pending[1]
-            if pending is not None and pending[0] == response_topic
-            else None
-        )
+        future = pending[1] if pending is not None and pending[0] == response_topic else None
         if future is None:
             topic_futures = [
                 pending_future
@@ -629,6 +645,7 @@ class NarwalCloudClient(NarwalClient):
             self.on_state_update(self.state)
 
     async def _handle_cloud_broadcast(self, topic: str, raw: bytes) -> None:
+        was_reachable = self.robot_awake
         try:
             inner_url, payload = _decode_envelope(raw)
         except ValueError:
@@ -638,7 +655,9 @@ class NarwalCloudClient(NarwalClient):
         short_topic = topic.removeprefix(prefix)
         if short_topic == "general/topic" and inner_url:
             short_topic = inner_url.lstrip("/")
-        await self._handle_broadcast(short_topic, payload)
+        handled = await self._handle_broadcast(short_topic, payload)
+        if not handled and not was_reachable and self.on_state_update is not None:
+            self.on_state_update(self.state)
 
     @classmethod
     def _build_cloud_active_payload(cls) -> bytes:
@@ -719,7 +738,7 @@ class NarwalCloudClient(NarwalClient):
             if result != mqtt.MQTT_ERR_SUCCESS:
                 raise NarwalConnectionError(f"MQTT response subscription failed ({result})")
             self._response_topics.add(response_topic)
-        message_id = str(uuid.uuid1())
+        message_id = str(uuid.uuid4())
         properties = mqtt.Properties(mqtt.PacketTypes.PUBLISH)
         properties.ResponseTopic = response_topic
         properties.CorrelationData = _correlation_data(message_id)
@@ -806,6 +825,15 @@ class NarwalCloudClient(NarwalClient):
             await self.subscribe_to_topics()
             await self._disconnect_waiter.wait()
             self._disconnect_waiter.clear()
+            await self._async_discard_stale_mqtt()
+
+    async def _async_discard_stale_mqtt(self) -> None:
+        """Stop and discard an MQTT network loop after a lost connection."""
+        client = self._mqtt
+        if client is None or self._mqtt_ready.is_set():
+            return
+        self._mqtt = None
+        await asyncio.to_thread(client.loop_stop)
 
     async def disconnect(self) -> None:
         """Close MQTT without blocking Home Assistant's event loop."""

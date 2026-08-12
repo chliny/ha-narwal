@@ -416,30 +416,42 @@ class NarwalDryMopRemainingSensor(NarwalEntity, SensorEntity):
 
 
 class NarwalDustBagHealthSensor(NarwalEntity, SensorEntity):
-    """Latest dust-bag health value with its app history."""
+    """Current dust-bag health value with its app history."""
 
     _attr_translation_key = "dust_bag_health"
     _attr_icon = "mdi:delete-variant"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         super().__init__(coordinator)
         self._set_entity_identity("sensor", "dust_bag_health")
 
     @property
-    def native_value(self) -> int | float | str | None:
+    def native_value(self) -> int | float | None:
         state = self.coordinator.data
-        latest = state.dust_bag_health[-1] if state and state.dust_bag_health else None
-        if not latest:
+        if state is None:
             return None
-        for key in ("end_health_Degree", "end_health_degree", "health_degree"):
-            if latest.get(key) is not None:
-                return latest[key]
+        sources = [state.dust_bag_health_current, *reversed(state.dust_bag_health)]
+        for source in sources:
+            for key in ("health_degree", "end_health_Degree", "end_health_degree"):
+                number = _task_record_number(source, key)
+                if number is not None and 0 <= number <= 100:
+                    return int(number) if number.is_integer() else number
         return None
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         state = self.coordinator.data
-        return {"history": state.dust_bag_health[-31:]} if state else {}
+        if state is None:
+            return {}
+        attributes: dict[str, object] = {}
+        remaining_days = _task_record_number(state.dust_bag_health_current, "day")
+        if remaining_days is not None and remaining_days >= 0 and remaining_days.is_integer():
+            attributes["remaining_days"] = int(remaining_days)
+        if state.dust_bag_health:
+            attributes["history"] = state.dust_bag_health[-31:]
+        return attributes
 
 
 class NarwalCleanTimelineSensor(NarwalEntity, SensorEntity):
