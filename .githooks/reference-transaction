@@ -1,0 +1,110 @@
+#!/bin/sh
+# Keep release tags aligned with the Home Assistant integration manifest.
+
+if [ "$1" != "prepared" ]; then
+    exit 0
+fi
+
+# Git has no pre-tag hook, so reference-transaction is used instead. Limit the
+# check to an actual `git tag` parent process so fetch/pull tag updates cannot
+# rewrite the working tree or abort synchronization.
+is_git_tag_process() {
+    parent_command=$(ps -p "$PPID" -o args= 2>/dev/null) || return 1
+    set -f
+    # Word splitting is intentional: only Git's command and global options are
+    # inspected. If parsing is ambiguous, skip locally and let CI validate it.
+    # shellcheck disable=SC2086
+    set -- $parent_command
+    set +f
+
+    case "${1:-}" in
+        git|*/git) shift ;;
+        *) return 1 ;;
+    esac
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            tag) return 0 ;;
+            -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)
+                [ "$#" -ge 2 ] || return 1
+                shift 2
+                ;;
+            --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*)
+                shift
+                ;;
+            -*) shift ;;
+            *) return 1 ;;
+        esac
+    done
+    return 1
+}
+
+if ! is_git_tag_process; then
+    exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+manifest="$repo_root/custom_components/narwal/manifest.json"
+sync_script="$repo_root/scripts/sync_manifest_version.py"
+temporary_manifest=
+trap 'test -z "$temporary_manifest" || rm -f "$temporary_manifest"' 0 1 2 15
+
+is_zero_oid() {
+    case "$1" in
+        *[!0]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+while read -r _old_oid new_oid ref_name; do
+    case "$ref_name" in
+        refs/tags/v*) ;;
+        *) continue ;;
+    esac
+
+    # Validate tag creation and moves. Deletions have no target to inspect.
+    if is_zero_oid "$new_oid"; then
+        continue
+    fi
+
+    tag=${ref_name#refs/tags/}
+    temporary_manifest=$(mktemp "${TMPDIR:-/tmp}/narwal-manifest.XXXXXX") || {
+        echo "error: cannot create a temporary manifest for tag validation." >&2
+        exit 1
+    }
+    if ! git show "${new_oid}^{commit}:custom_components/narwal/manifest.json" \
+        >"$temporary_manifest" 2>/dev/null; then
+        echo "error: tag $tag does not point to a commit with manifest.json." >&2
+        exit 1
+    fi
+
+    python3 "$sync_script" "$tag" --manifest "$temporary_manifest" --check \
+        >/dev/null 2>&1
+    committed_status=$?
+    rm -f "$temporary_manifest"
+    temporary_manifest=
+
+    if [ "$committed_status" -eq 0 ]; then
+        continue
+    fi
+
+    python3 "$sync_script" "$tag" --manifest "$manifest"
+    status=$?
+
+    if [ "$status" -eq 2 ]; then
+        echo "error: tag $tag was rejected because manifest.json was updated." >&2
+        echo "       Review and commit the version change, then create the tag again." >&2
+        exit 1
+    fi
+    if [ "$status" -eq 0 ]; then
+        echo "error: tag $tag was rejected because the tagged commit has a different" >&2
+        echo "       manifest version. Tag the commit containing the version bump." >&2
+        exit 1
+    fi
+    if [ "$status" -ne 0 ]; then
+        echo "error: tag $tag was rejected because its version could not be validated." >&2
+        exit 1
+    fi
+done
+
+exit 0
