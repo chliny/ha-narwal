@@ -19,6 +19,7 @@ APP_VERSION = "2.6.90"
 VERSION_CODE = "2137"
 DEFAULT_BASE_URL = "https://cn-app.narwaltech.com"
 REQUEST_TIMEOUT = ClientTimeout(total=25)
+_AUTH_EXPIRED_CODES = frozenset({"130105"})
 
 
 class NarwalCloudError(Exception):
@@ -51,11 +52,11 @@ class CloudDevice:
     def from_json(cls, data: dict[str, Any]) -> CloudDevice:
         """Create a sanitized device model from an API response."""
         return cls(
-            device_id=str(data.get("deviceId", "")),
-            product_id=str(data.get("productId", "")),
-            name=str(data.get("robotName", "") or "Narwal"),
-            firmware_version=str(data.get("firmwareVersion", "")),
-            serial_number=str(data.get("snNumber", "")),
+            device_id=_as_text(data.get("deviceId")),
+            product_id=_as_text(data.get("productId")),
+            name=_as_text(data.get("robotName")) or "Narwal",
+            firmware_version=_as_text(data.get("firmwareVersion")),
+            serial_number=_as_text(data.get("snNumber")),
         )
 
 
@@ -176,19 +177,24 @@ class NarwalCloudApi:
                 body = await response.json(content_type=None)
         except ClientResponseError as err:
             if err.status in (401, 403):
-                raise NarwalCloudAuthError("Narwal cloud rejected authentication") from err
-            raise NarwalCloudError("Narwal cloud request failed") from err
-        except (ClientError, TimeoutError, ValueError) as err:
-            raise NarwalCloudError("Narwal cloud request failed") from err
+                raise NarwalCloudAuthError("Narwal cloud rejected authentication") from None
+            raise NarwalCloudError("Narwal cloud request failed") from None
+        except (ClientError, TimeoutError, ValueError):
+            # aiohttp transport exceptions may contain query parameters such as
+            # device IDs. Suppress that context so Home Assistant does not
+            # include those identifiers in a chained traceback.
+            raise NarwalCloudError("Narwal cloud request failed") from None
 
         if not isinstance(body, dict):
             raise NarwalCloudError("Narwal cloud returned an invalid response")
-        code = str(body.get("code"))
+        code = _response_code(body.get("code"))
         normalized_code = "0" if code and set(code) == {"0"} else code
         if code not in accepted_codes and normalized_code not in accepted_codes:
-            if path.endswith("/loginByPw") or code in {"401", "403"}:
+            if path.endswith("/loginByPw") or code in {"401", "403"} or code in _AUTH_EXPIRED_CODES:
                 raise NarwalCloudAuthError("Narwal cloud rejected authentication")
-            raise NarwalCloudError(f"Narwal cloud rejected request (code={code})")
+            # Business error fields are intentionally omitted: malformed or
+            # vendor-controlled strings must not reach Home Assistant logs.
+            raise NarwalCloudError("Narwal cloud rejected request")
         result = body.get("result")
         return body.get("data") if result is None and "data" in body else result
 
@@ -234,8 +240,8 @@ class NarwalCloudApi:
         )
         if not isinstance(result, dict):
             raise NarwalCloudAuthError("Login response did not contain an account")
-        token = str(result.get("token", ""))
-        user_uuid = str(result.get("uuid", ""))
+        token = _as_text(result.get("token"))
+        user_uuid = _as_text(result.get("uuid"))
         if not token or not user_uuid:
             raise NarwalCloudAuthError("Login response did not contain credentials")
         self.account = CloudAccount(token=token, uuid=user_uuid)
@@ -250,15 +256,22 @@ class NarwalCloudApi:
             "/user-device-platform-server/device-info/getDeviceInfoList",
         )
         if not isinstance(result, dict):
-            return []
+            raise NarwalCloudError("Device list response was invalid")
         values = result.get("deviceInfoList")
         if not isinstance(values, list):
-            return []
-        return [
-            CloudDevice.from_json(value)
-            for value in values
-            if isinstance(value, dict) and value.get("deviceId") and value.get("productId")
-        ]
+            raise NarwalCloudError("Device list response was invalid")
+
+        devices: list[CloudDevice] = []
+        known_ids: set[str] = set()
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            device = CloudDevice.from_json(value)
+            if not device.device_id or not device.product_id or device.device_id in known_ids:
+                continue
+            known_ids.add(device.device_id)
+            devices.append(device)
+        return devices
 
     async def broker(self) -> str:
         """Return the MQTT-over-TLS broker hostname."""
@@ -269,9 +282,9 @@ class NarwalCloudApi:
             "/iot-broker-discover/app/v1/broker/discover",
             params={"country": self._country_code},
         )
-        if not isinstance(result, str) or not result:
+        if not isinstance(result, str) or not (endpoint := result.strip()):
             raise NarwalCloudError("Broker discovery returned no endpoint")
-        return result
+        return endpoint
 
     async def consumables(
         self,
@@ -626,6 +639,21 @@ def _as_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _as_text(value: Any) -> str:
+    """Return a stripped cloud string without coercing null or containers."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _response_code(value: Any) -> str:
+    """Normalize a bounded scalar business code from a cloud response."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise NarwalCloudError("Narwal cloud returned an invalid response")
+    code = str(value).strip()
+    if not code or len(code) > 32:
+        raise NarwalCloudError("Narwal cloud returned an invalid response")
+    return code
 
 
 def _as_optional_int(value: Any) -> int | None:

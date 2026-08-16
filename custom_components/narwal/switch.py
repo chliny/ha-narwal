@@ -8,7 +8,7 @@ from homeassistant.components.switch import SwitchEntity, SwitchEntityDescriptio
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
@@ -207,7 +207,7 @@ CONFIG_SWITCHES = (
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Narwal station switches."""
     del hass
@@ -251,11 +251,11 @@ class NarwalConfigSwitch(NarwalEntity, SwitchEntity):
     @property
     def is_on(self) -> bool | None:
         """Return the setting reported by config/get."""
-        raw = self.coordinator.device_config.get(
-            str(self.entity_description.get_field)
-        )
+        raw = self.coordinator.device_config.get(str(self.entity_description.get_field))
         if isinstance(raw, bool):
             return raw
+        if not isinstance(raw, (int, str, bytes, bytearray)):
+            return None
         try:
             return bool(int(raw))
         except (TypeError, ValueError):
@@ -273,9 +273,7 @@ class NarwalConfigSwitch(NarwalEntity, SwitchEntity):
             raise HomeAssistantError(
                 f"Narwal action failed with result code {response.result_code}"
             )
-        self.coordinator.device_config[
-            str(self.entity_description.get_field)
-        ] = int(enabled)
+        self.coordinator.device_config[str(self.entity_description.get_field)] = int(enabled)
         self.async_write_ha_state()
 
     async def async_turn_on(self, **kwargs: object) -> None:

@@ -58,6 +58,11 @@
         "name": "Aspirateur"
       }
     },
+    "camera": {
+      "map": {
+        "name": "Carte"
+      }
+    },
     "sensor": {
       "cleaning_area": {
         "name": "Surface nettoyée"
@@ -137,9 +142,6 @@
           "on": "À la station",
           "off": "Hors de la station"
         }
-      },
-      "charging": {
-        "name": "En charge"
       }
     },
     "button": {

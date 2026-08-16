@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from homeassistant.components.event import EventEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
@@ -15,7 +15,7 @@ from .narwal_client import NarwalNotification
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up cloud notification synchronization."""
     del hass
@@ -34,8 +34,7 @@ class NarwalNotificationEvent(NarwalEntity, EventEntity):
         self._set_entity_identity("event", "notification")
         state = coordinator.data
         self._seen_ids = {
-            item.message_id
-            for item in (state.notifications if state is not None else [])
+            item.message_id for item in (state.notifications if state is not None else [])
         }
 
     def _handle_coordinator_update(self) -> None:
@@ -43,11 +42,7 @@ class NarwalNotificationEvent(NarwalEntity, EventEntity):
         state = self.coordinator.data
         if state is not None:
             current_ids = {item.message_id for item in state.notifications}
-            unseen = [
-                item
-                for item in state.notifications
-                if item.message_id not in self._seen_ids
-            ]
+            unseen = [item for item in state.notifications if item.message_id not in self._seen_ids]
             for item in sorted(unseen, key=lambda value: value.created_at):
                 self._trigger_notification(item)
                 self._seen_ids.add(item.message_id)
@@ -70,4 +65,4 @@ class NarwalNotificationEvent(NarwalEntity, EventEntity):
     @property
     def available(self) -> bool:
         """Cloud messages remain available while the robot sleeps."""
-        return self.coordinator.last_update_success
+        return self.coordinator.cloud_metadata_available

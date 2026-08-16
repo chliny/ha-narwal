@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
+
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import PERCENTAGE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
@@ -16,7 +18,7 @@ from .entity import NarwalEntity
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up supported Narwal number entities."""
     del hass
@@ -50,11 +52,15 @@ class NarwalVolumeNumber(NarwalEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
+        """Return a finite volume percentage reported by the robot."""
         raw = self.coordinator.device_config.get("1")
+        if isinstance(raw, bool) or not isinstance(raw, (int, float, str, bytes, bytearray)):
+            return None
         try:
-            return float(raw)
+            value = float(raw)
         except (TypeError, ValueError):
             return None
+        return value if math.isfinite(value) and 0 <= value <= 100 else None
 
     async def async_set_native_value(self, value: float) -> None:
         response = await self._async_await_command(

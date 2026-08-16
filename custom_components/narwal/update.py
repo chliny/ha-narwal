@@ -9,7 +9,7 @@ from homeassistant.components.update import (
 )
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
@@ -19,7 +19,7 @@ from .entity import NarwalEntity
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the read-only Narwal firmware update entity."""
     async_add_entities([NarwalFirmwareUpdateEntity(entry.runtime_data)])

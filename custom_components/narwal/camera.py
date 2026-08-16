@@ -8,17 +8,26 @@ import io
 import logging
 import math
 import time
+from typing import TYPE_CHECKING
 
+from aiohttp import web
 from homeassistant.components.camera import Camera
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .narwal_client.const import WorkingStatus
 
+if TYPE_CHECKING:
+    from PIL.Image import Image
+
+    from .narwal_client.models import MapData, MapDisplayData
+
 _LOGGER = logging.getLogger(__name__)
+
+type RenderKey = tuple[object, ...]
 
 # Minimum seconds between re-renders (display_map arrives every ~1.5s
 # but PIL rendering is CPU-bound — no need to render every broadcast).
@@ -39,7 +48,7 @@ _DEBUG_RECORD_INTERVAL = _TRAIL_RECORD_INTERVAL
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Narwal map camera entity."""
     coordinator = entry.runtime_data
@@ -50,23 +59,26 @@ async def async_setup_entry(
 class NarwalMapCamera(NarwalEntity, Camera):
     """Camera entity that streams the vacuum's map as MJPEG."""
 
-    _attr_name = "Map"
+    _attr_translation_key = "map"
     _attr_is_streaming = True
 
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         """Initialize the map camera entity."""
         NarwalEntity.__init__(self, coordinator)
         Camera.__init__(self)
+        self.content_type = "image/png"
         self._set_entity_identity("camera", "map")
         self._cached_image: bytes | None = None
-        self._cache_key: tuple = ()
+        self._cache_key: RenderKey = ()
         self._last_render_time: float = 0.0
         self._render_count: int = 0
         self._render_task: asyncio.Task[None] | None = None
-        self._pending_render: tuple[object | None, tuple] | None = None
+        self._pending_render: tuple[MapDisplayData | None, RenderKey] | None = None
         # Cached base map (PIL Image) — only re-rendered when static map changes
-        self._base_map_image = None  # PIL Image or None
-        self._base_map_source = None
+        self._base_map_image: Image | None = None
+        self._base_map_source: MapData | None = None
+        self._observed_map_source: MapData | None = None
+        self._map_generation: int = 0
         # Trail state — accumulated grid-coordinate positions during cleaning
         self._trail: list[tuple[float, float]] = []
         self._last_trail_record: float = 0.0
@@ -79,6 +91,11 @@ class NarwalMapCamera(NarwalEntity, Camera):
         self._vp_max_y: float = 0.0
         self._vp_initialized: bool = False
 
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to updates and render map data fetched during setup."""
+        await super().async_added_to_hass()
+        self._handle_coordinator_update()
+
     async def async_camera_image(
         self,
         width: int | None = None,
@@ -87,7 +104,21 @@ class NarwalMapCamera(NarwalEntity, Camera):
         """Return the latest map image as PNG (for snapshot/polling clients)."""
         return self._cached_image
 
-    async def handle_async_mjpeg_stream(self, request):
+    @property
+    def available(self) -> bool:
+        """Return whether a current or cached map image is available."""
+        static_map = self.coordinator.client.state.map_data
+        return bool(
+            self._cached_image
+            or (
+                static_map
+                and static_map.compressed_map
+                and static_map.width > 0
+                and static_map.height > 0
+            )
+        )
+
+    async def handle_async_mjpeg_stream(self, request: web.Request) -> web.StreamResponse:
         """Stream map as MJPEG using HA's built-in still-image streamer."""
         from homeassistant.components.camera import async_get_still_stream
 
@@ -154,6 +185,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         """Re-render the map when new data arrives from the coordinator."""
         state = self.coordinator.client.state
         display = state.map_display_data
+        new_key: RenderKey
 
         # Detect cleaning session transitions — clear trail on new session
         current_status = state.working_status
@@ -173,12 +205,31 @@ class NarwalMapCamera(NarwalEntity, Camera):
             new_key = (display.robot_x, display.robot_y, display.robot_heading)
         else:
             static_map = state.map_data
-            if not static_map or not static_map.compressed_map:
+            valid_static_map = (
+                static_map
+                if static_map
+                and static_map.compressed_map
+                and static_map.width > 0
+                and static_map.height > 0
+                else None
+            )
+            if valid_static_map is not self._observed_map_source:
+                # A map switch invalidates the old still image immediately.
+                # Incrementing the generation also prevents executor work for
+                # the previous map from committing after the switch.
+                self._observed_map_source = valid_static_map
+                self._map_generation += 1
+                self._cached_image = None
+                self._cache_key = ()
+                self._base_map_image = None
+                self._base_map_source = None
+                self._pending_render = None
+                self._last_render_time = 0.0
+                self._reset_trail()
+            if valid_static_map is None:
                 self.async_write_ha_state()
                 return
-            if static_map.width <= 0 or static_map.height <= 0:
-                self.async_write_ha_state()
-                return
+            static_map = valid_static_map
 
             # Record trail in grid coordinates
             if display and not (display.robot_x == 0.0 and display.robot_y == 0.0):
@@ -204,9 +255,6 @@ class NarwalMapCamera(NarwalEntity, Camera):
             else:
                 new_key = (static_key,)
 
-        now = time.monotonic()
-        since_render = now - self._last_render_time if self._last_render_time else 999
-
         if new_key == self._cache_key and self._cached_image:
             self.async_write_ha_state()
             return
@@ -215,10 +263,9 @@ class NarwalMapCamera(NarwalEntity, Camera):
             self._pending_render = (display, new_key)
             return
 
-        if self._cached_image and since_render < _MIN_RENDER_INTERVAL:
-            self.async_write_ha_state()
-            return
-
+        # _async_render_pending enforces the minimum interval itself. Always
+        # queue the newest frame so a final update inside the throttle window
+        # is rendered even when no later broadcast arrives.
         self._pending_render = (display, new_key)
         self._render_task = self.hass.async_create_task(
             self._async_render_pending(),
@@ -250,10 +297,14 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 await self._render_task
         await super().async_will_remove_from_hass()
 
-    async def _async_render(self, display, new_key) -> None:
+    async def _async_render(
+        self,
+        display: MapDisplayData | None,
+        new_key: RenderKey,
+    ) -> None:
         """Render the map image in an executor thread."""
         if _DEBUG_VIEW and display:
-            trail = list(self._trail)
+            debug_trail = list(self._trail)
             dock = self._dock_pos
             viewport = None
             if self._vp_initialized:
@@ -269,7 +320,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
                     display.robot_x,
                     display.robot_y,
                     display.robot_heading,
-                    trail,
+                    debug_trail,
                     dock,
                     viewport,
                 )
@@ -289,12 +340,14 @@ class NarwalMapCamera(NarwalEntity, Camera):
         if not static_map:
             self.async_write_ha_state()
             return
+        map_generation = self._map_generation
 
         from .narwal_client.map_renderer import render_base_map, render_overlay
 
         # Rebuild base map only when static map data changes
         static_ts = static_map.created_at or 0
-        if self._base_map_image is None or static_map is not self._base_map_source:
+        base_map_image = self._base_map_image
+        if base_map_image is None or static_map is not self._base_map_source:
             room_names: dict[int, str] | None = None
             if static_map.rooms:
                 room_names = {r.room_id: r.display_name for r in static_map.rooms}
@@ -311,8 +364,14 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 static_map.origin_y,
             )
             if base_img:
+                if (
+                    map_generation != self._map_generation
+                    or self.coordinator.client.state.map_data is not static_map
+                ):
+                    return
                 self._base_map_image = base_img
                 self._base_map_source = static_map
+                base_map_image = base_img
                 _LOGGER.info(
                     "Base map rendered (ts=%d, %dx%d)",
                     static_ts,
@@ -323,10 +382,14 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 self.async_write_ha_state()
                 return
 
+        if base_map_image is None:
+            self.async_write_ha_state()
+            return
+
         # Compute robot grid position
-        robot_x = None
-        robot_y = None
-        robot_heading = None
+        robot_x: float | None = None
+        robot_y: float | None = None
+        robot_heading: float | None = None
         if display:
             grid_pos = display.to_grid_coords(
                 static_map.resolution,
@@ -336,12 +399,12 @@ class NarwalMapCamera(NarwalEntity, Camera):
             if grid_pos is not None:
                 robot_x, robot_y = grid_pos
                 robot_heading = display.robot_heading
-        trail = list(self._trail) if self._trail else None
+        trail: list[tuple[float, float]] | None = list(self._trail) if self._trail else None
 
         try:
             png_bytes = await self.hass.async_add_executor_job(
                 render_overlay,
-                self._base_map_image,
+                base_map_image,
                 static_map.height,
                 robot_x,
                 robot_y,
@@ -349,7 +412,11 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 trail,
             )
 
-            if png_bytes:
+            if (
+                png_bytes
+                and map_generation == self._map_generation
+                and self.coordinator.client.state.map_data is static_map
+            ):
                 self._cached_image = png_bytes
                 self._cache_key = new_key
                 self._last_render_time = time.monotonic()

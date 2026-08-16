@@ -89,7 +89,10 @@ class CommandResult(IntEnum):
     """Response code from command field 1."""
 
     SUCCESS = 1
-    NOT_APPLICABLE = 2  # e.g., set_fan_level when not cleaning
+    GENERAL_FAILED = 2
+    # Compatibility alias for callers of versions that incorrectly named the
+    # protocol's general-failure result. Internal code must use the real name.
+    NOT_APPLICABLE = GENERAL_FAILED
     CONFLICT = 3  # e.g., recall when already recalling
 
 

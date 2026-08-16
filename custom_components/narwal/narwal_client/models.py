@@ -504,8 +504,14 @@ class CommandResponse:
         return self.result_code == CommandResult.SUCCESS
 
     @property
+    def general_failed(self) -> bool:
+        """Return whether the robot reported a general execution failure."""
+        return self.result_code == CommandResult.GENERAL_FAILED
+
+    @property
     def not_applicable(self) -> bool:
-        return self.result_code == CommandResult.NOT_APPLICABLE
+        """Compatibility alias for the former, incorrectly named property."""
+        return self.general_failed
 
 
 @dataclass(frozen=True, slots=True)
@@ -644,40 +650,36 @@ class NarwalState:
     is_paused: bool = False
 
     # RobotTaskStatus sub-state for the current task. The field number depends
-    # on TaskType (for example, SMART_CLEAN uses field 7).
+    # on TaskType (for example, SMART_CLEAN uses field 8).
     task_sub_status: int = 0
 
-    # IdleStatus from RobotTaskStatus field 2:
+    # IdleStatus from RobotTaskStatus field 3:
     # 1/6=in station, 2/7=outside station.
     idle_status: int = 0
 
-    # Dock sub-state (field 3 sub-field 10: 1=docked, 2=docking in progress)
+    # Deprecated legacy fields retained for state compatibility. The schema
+    # identifies sub-fields 3/10/12 as Idle/Recall/WashAndDry task statuses,
+    # not independent dock signals, so they are no longer populated.
     dock_sub_state: int = 0
 
     # Returning flag (field 3 sub-field 7: 1=returning to dock)
     # Confirmed via live test: appears when robot is navigating back to dock
     is_returning_to_dock: bool = False
 
-    # Dock activity (field 3 sub-field 12: 2/6 observed when docked)
     dock_activity: int = 0
 
-    # Dock presence (field 3 sub-field 3)
-    # Values observed: 1=on dock, 2=off dock, 6=on dock (charged idle)
     dock_presence: int = 0
 
-    # Dock indicator from field 11 (top-level base_status field)
+    # StationContactType from top-level field 11. Live captures show 1 when
+    # undocked and values >= 2 while docked, so it is a usable dock signal.
     # Validated via dock_research.py guided test (5 captures):
     #   2 = on dock (all 3 on-dock captures)
     #   1 = off dock (both off-dock captures)
-    # Perfect dock correlation — primary STANDBY dock signal.
-    dock_field11: int = 0
+    station_contact_type: int = 0
 
-    # Dock indicator from field 47 (top-level base_status field)
-    # Validated via dock_research.py guided test (5 captures):
-    #   3 = on dock (all 3 on-dock captures)
-    #   2 = off dock (both off-dock captures)
-    # Secondary confirmation signal.
-    dock_field47: int = 0
+    # ChargingStatus enum from top-level field 47. It describes charging state
+    # and must not be treated as independent proof that the robot is docked.
+    charging_status: int = 0
 
     # Raw data for fields we haven't fully decoded yet
     raw_base_status: dict[str, Any] = field(default_factory=dict)
@@ -709,14 +711,8 @@ class NarwalState:
                 return True
             if self.idle_status in (2, 3, 4, 5, 7):
                 return False
-        # For idle, unknown, or unmapped states, check dock field signals.
-        if self.dock_sub_state == 1:
-            return True
-        if self.dock_activity > 0:
-            return True
-        if self.dock_field11 >= 2:
-            return True
-        return self.dock_field47 in (1, 3)
+        # For idle, unknown, or unmapped states, check top-level dock signals.
+        return self.station_contact_type >= 2
 
     @property
     def is_returning(self) -> bool:
@@ -763,33 +759,42 @@ class NarwalState:
                      (1118175232 → 83.0%, matching app ~84%)
           Field 38 = static battery health (always 100; design capacity)
 
-        Field 3 is RobotTaskStatus. Its sub-field 1 is TaskType and the
-        matching task-specific sub-state is stored in sub-fields 2 through 22.
+        Field 3 is RobotTaskStatus. Its sub-field 1 is TaskType, sub-field 2
+        is pauseStatus, and task-specific sub-states start at sub-field 3.
 
-        Dock indicators (validated via dock_research.py, 5 captures):
-          Field 11 = 2 when docked, 1 when undocked
-          Field 47 = 3 when docked, 2 when undocked
+        Field 46 is RobotTaskStatusV2. Any TaskStatus.isPaused value in its
+        statusList overrides the legacy field 3.2 pause flag.
+
+        Station/charging fields:
+          Field 11 = StationContactType (validated as a dock contact signal)
+          Field 47 = ChargingStatus (not an independent dock signal)
 
         Note: field 32 mirrors field 3 exactly (redundant).
         """
         self.raw_base_status = decoded
-        # Field 11 = dock indicator (2=docked, 1=undocked)
+        # This method consumes a full RobotBaseStatus message. Reset optional
+        # protobuf fields first so omitted/default values cannot leave stale
+        # task, pause, station-contact, or charging overlays behind.
+        self.working_status = WorkingStatus.UNKNOWN
+        self.is_paused = False
+        self.task_sub_status = 0
+        self.idle_status = 0
+        self.is_returning_to_dock = False
+        self.dock_sub_state = 0
+        self.dock_activity = 0
+        self.dock_presence = 0
+        self.station_contact_type = 0
+        self.charging_status = 0
+
+        # Field 11 = StationContactType (2+=docked, 1=undocked in captures)
         if "11" in decoded:
-            try:
-                self.dock_field11 = int(decoded["11"])
-            except (ValueError, TypeError):
-                self.dock_field11 = 0
-        # Field 47 = dock indicator (3=docked, 2=undocked)
+            self.station_contact_type = _int_or_default(decoded["11"])
+        # Field 47 = ChargingStatus enum; retained for diagnostics only.
         if "47" in decoded:
-            try:
-                self.dock_field47 = int(decoded["47"])
-            except (ValueError, TypeError):
-                self.dock_field47 = 0
+            self.charging_status = _int_or_default(decoded["47"])
         # Field 3 is a RobotTaskStatus nested message: {1: task_type, ...}
-        # Sub-field layout differs across firmware versions:
-        #   Old FW: {1: ws, 2: paused, 3: dock_presence, 7: returning,
-        #            10: dock_sub, 12: dock_activity}
-        #   v01.07.23+: {1: ws, 4: ?, 11: ?} — sub-fields 2/3/7/10/12 absent
+        # Sub-field layout differs across firmware versions. Fields 3 onward
+        # are task-specific status enums, not independent dock indicators.
         # bbp may also return a list for repeated messages.
         field3 = decoded.get("3")
         if isinstance(field3, list):
@@ -808,26 +813,29 @@ class NarwalState:
                         raw_val,
                     )
                     self.working_status = WorkingStatus.UNKNOWN
-            # RobotTaskStatus uses one task-specific status field.
+            # RobotTaskStatus field 2 is the pause overlay. Task-specific
+            # status fields start at field 3 (IdleStatus) and follow the
+            # protobuf declaration order.
+            self.is_paused = bool(_int_or_default(field3.get("2")))
             task_field = {
-                WorkingStatus.IDLE: 2,
-                WorkingStatus.SWEEP: 3,
-                WorkingStatus.MOP: 4,
-                WorkingStatus.SWEEP_AND_MOP: 5,
-                WorkingStatus.SWEEP_THEN_MOP: 6,
-                WorkingStatus.SMART_CLEAN: 7,
-                WorkingStatus.BUILD_MAP: 8,
-                WorkingStatus.RECALL: 9,
-                WorkingStatus.WASH_AND_DRY_MOP: 11,
-                WorkingStatus.UPDATE_MAP: 14,
-                WorkingStatus.WAITING_COMMAND: 15,
-                WorkingStatus.COMPOSITE_CLEAN: 16,
-                WorkingStatus.DUST_GATHERING: 17,
-                WorkingStatus.TELECONTROL: 18,
-                WorkingStatus.MAINTAIN_FLOOR: 19,
-                WorkingStatus.SEARCH_PERSON: 20,
-                WorkingStatus.VIDEO_CRUISE: 21,
-                WorkingStatus.SEARCH_PET: 22,
+                WorkingStatus.IDLE: 3,
+                WorkingStatus.SWEEP: 4,
+                WorkingStatus.MOP: 5,
+                WorkingStatus.SWEEP_AND_MOP: 6,
+                WorkingStatus.SWEEP_THEN_MOP: 7,
+                WorkingStatus.SMART_CLEAN: 8,
+                WorkingStatus.BUILD_MAP: 9,
+                WorkingStatus.RECALL: 10,
+                WorkingStatus.WASH_AND_DRY_MOP: 12,
+                WorkingStatus.UPDATE_MAP: 15,
+                WorkingStatus.WAITING_COMMAND: 16,
+                WorkingStatus.COMPOSITE_CLEAN: 17,
+                WorkingStatus.DUST_GATHERING: 18,
+                WorkingStatus.TELECONTROL: 19,
+                WorkingStatus.MAINTAIN_FLOOR: 20,
+                WorkingStatus.SEARCH_PERSON: 21,
+                WorkingStatus.VIDEO_CRUISE: 22,
+                WorkingStatus.SEARCH_PET: 23,
             }.get(self.working_status)
             try:
                 self.task_sub_status = (
@@ -837,13 +845,9 @@ class NarwalState:
                 self.task_sub_status = 0
             if self.working_status == WorkingStatus.IDLE:
                 self.idle_status = self.task_sub_status
-            self.is_paused = False
             self.is_returning_to_dock = self.is_returning
-            self.dock_sub_state = _int_or_default(field3.get("10"))
-            self.dock_activity = _int_or_default(field3.get("12"))
-            self.dock_presence = _int_or_default(field3.get("3"))
             # Log unrecognized sub-fields for future firmware mapping
-            _known_f3 = {"1", "2", "3", "7", "10", "12"}
+            _known_f3 = {str(field_number) for field_number in range(1, 24)}
             _unknown_f3 = set(field3.keys()) - _known_f3
             if _unknown_f3:
                 _LOGGER.debug(
@@ -855,6 +859,23 @@ class NarwalState:
                 "field3 is %s (expected dict); state may not update",
                 type(field3).__name__,
             )
+
+        field46 = decoded.get("46")
+        if isinstance(field46, list):
+            field46 = field46[0] if field46 else None
+        if isinstance(field46, dict):
+            status_list = field46.get("1", [])
+            if isinstance(status_list, dict):
+                status_list = [status_list]
+            elif not isinstance(status_list, list):
+                status_list = []
+            pause_values = [
+                bool(_int_or_default(status["3"]))
+                for status in status_list
+                if isinstance(status, dict) and "3" in status
+            ]
+            if pause_values:
+                self.is_paused = any(pause_values)
         if "2" in decoded:
             # Field 2 = real-time battery SOC as float32
             # (e.g. 1118175232 → 83.0%; bbp may return int or float)
@@ -912,9 +933,9 @@ class NarwalState:
                 if self.firmware_target.startswith("b'"):
                     self.firmware_target = self.firmware_target[2:-1]
         if "4" in decoded:
-            self.upgrade_status_code = int(decoded["4"])
+            self.upgrade_status_code = _int_or_default(decoded["4"], self.upgrade_status_code)
 
     def update_from_download_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded download_status message."""
         if "1" in decoded:
-            self.download_status = int(decoded["1"])
+            self.download_status = _int_or_default(decoded["1"], self.download_status)

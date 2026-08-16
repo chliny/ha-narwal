@@ -50,6 +50,11 @@ from .const import (
     FanLevel,
     MopHumidity,
 )
+from .map_renderer import (
+    MAX_COMPRESSED_MAP_BYTES,
+    map_dimensions_are_safe,
+    map_payload_is_valid,
+)
 from .models import CommandResponse, DeviceInfo, MapData, MapDisplayData, NarwalState
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,10 +75,8 @@ class NarwalCommandError(Exception):
 class NarwalClient:
     """Transport base containing Narwal cloud commands and state parsing."""
 
-    _DEFAULT_CLEAN_PAYLOAD = bytes.fromhex("0a0e12002a0a0a060803100218012a00")
     _ZONE_TYPE_ROOM = 1
     _ZONE_TYPE_WHOLE_MAP = 3
-    _DEFAULT_CLEAN_PLAN_MODE = 1
 
     def __init__(self, *, device_id: str, product_id: str) -> None:
         self.device_id = device_id
@@ -85,6 +88,7 @@ class NarwalClient:
         self._last_display_map_time = 0.0
         self._command_lock = asyncio.Lock()
         self._should_reconnect = True
+        self._map_generation = 0
 
     @property
     def last_broadcast_age(self) -> float:
@@ -110,26 +114,34 @@ class NarwalClient:
             _LOGGER.debug("Failed to decode protobuf for topic %s", short_topic)
             return False
 
-        handled = True
-        if short_topic == "status/working_status":
-            self.state.update_from_working_status(decoded)
-        elif short_topic == "status/robot_base_status":
-            self.state.update_from_base_status(decoded)
-        elif short_topic == "upgrade/upgrade_status":
-            self.state.update_from_upgrade_status(decoded)
-        elif short_topic == "status/download_status":
-            self.state.update_from_download_status(decoded)
-        elif short_topic == "map/display_map":
-            self.state.map_display_data = MapDisplayData.from_broadcast(decoded)
-            self._last_display_map_time = time.monotonic()
-        elif short_topic == "status/time_line_status":
-            self._update_clean_timeline(decoded)
-        else:
-            handled = False
+        try:
+            handled = True
+            if short_topic == "status/working_status":
+                self.state.update_from_working_status(decoded)
+            elif short_topic == "status/robot_base_status":
+                self.state.update_from_base_status(decoded)
+            elif short_topic == "upgrade/upgrade_status":
+                self.state.update_from_upgrade_status(decoded)
+            elif short_topic == "status/download_status":
+                self.state.update_from_download_status(decoded)
+            elif short_topic == "map/display_map":
+                self.state.map_display_data = MapDisplayData.from_broadcast(decoded)
+                self._last_display_map_time = time.monotonic()
+            elif short_topic == "status/time_line_status":
+                self._update_clean_timeline(decoded)
+            else:
+                handled = False
 
-        if handled and self.on_state_update is not None:
-            self.on_state_update(self.state)
-        return handled
+            if handled and self.on_state_update is not None:
+                self.on_state_update(self.state)
+            return handled
+        except Exception:
+            _LOGGER.debug(
+                "Discarding invalid protobuf state for topic %s",
+                short_topic,
+                exc_info=True,
+            )
+            return False
 
     @staticmethod
     def _decode_protobuf(payload: bytes) -> dict[str, Any]:
@@ -186,40 +198,13 @@ class NarwalClient:
         return await self.send_command(TOPIC_CMD_YELL)
 
     async def start(self, **kwargs: Any) -> CommandResponse:
-        """Start cleaning, falling back to the robot's mode-1 plan."""
+        """Start unrestricted whole-map cleaning."""
         del kwargs
-        response = await self.send_command(
+        return await self.send_command(
             TOPIC_CMD_START_CLEAN,
             payload=self._build_clean_payload_v2(),
             timeout=10.0,
         )
-        if response.success:
-            return response
-
-        plan_id = self._default_clean_plan_id()
-        if plan_id is None:
-            _LOGGER.warning(
-                "Full CleanTask was rejected with result code %s, but the "
-                "default mode-1 cleaning plan is unavailable",
-                response.result_code,
-            )
-            return response
-
-        _LOGGER.info(
-            "Full CleanTask was rejected with result code %s; retrying with "
-            "the default mode-1 cleaning plan",
-            response.result_code,
-        )
-        return await self.start_clean_plan(plan_id)
-
-    def _default_clean_plan_id(self) -> int | None:
-        """Return the first cleaning plan whose protocol mode is 1."""
-        for plan in self.state.clean_plans:
-            if self._as_int(plan.get("clean_mode")) == self._DEFAULT_CLEAN_PLAN_MODE:
-                plan_id = self._as_int(plan.get("id"))
-                if plan_id is not None:
-                    return plan_id
-        return None
 
     def _build_clean_payload_v2(
         self,
@@ -300,81 +285,13 @@ class NarwalClient:
         }
         return blackboxprotobuf.encode_message(message, typedef)
 
-    def _build_room_clean_payload(self, room_ids: list[int]) -> bytes:
-        """Build the legacy flat room-cleaning payload."""
-        if not room_ids:
-            return self._DEFAULT_CLEAN_PAYLOAD
-
-        import blackboxprotobuf
-
-        room_entries = [
-            {
-                "1": room_id,
-                "2": 2,
-                "3": 1,
-                "6": 3,
-                "7": 2,
-            }
-            for room_id in room_ids
-        ]
-        room_type = {
-            "type": "message",
-            "seen_repeated": True,
-            "message_typedef": {
-                "1": {"type": "uint"},
-                "2": {"type": "int"},
-                "3": {"type": "int"},
-                "6": {"type": "int"},
-                "7": {"type": "int"},
-            },
-        }
-        message: dict[str | int, Any] = {
-            "1": {
-                "2": room_entries if len(room_entries) > 1 else room_entries[0],
-                "5": {
-                    "1": {"1": 3, "2": 2, "3": 1},
-                    "5": {},
-                },
-            }
-        }
-        typedef: Any = {
-            "1": {
-                "type": "message",
-                "message_typedef": {
-                    "2": room_type,
-                    "5": {
-                        "type": "message",
-                        "message_typedef": {
-                            "1": {
-                                "type": "message",
-                                "message_typedef": {
-                                    "1": {"type": "int"},
-                                    "2": {"type": "int"},
-                                    "3": {"type": "int"},
-                                },
-                            },
-                            "5": {"type": "message", "message_typedef": {}},
-                        },
-                    },
-                },
-            }
-        }
-        return blackboxprotobuf.encode_message(message, typedef)
-
     async def start_rooms(self, room_ids: list[int]) -> CommandResponse:
         """Start cleaning in the selected rooms."""
         if not room_ids:
             return await self.start()
-        response = await self.send_command(
-            TOPIC_CMD_START_CLEAN,
-            payload=self._build_clean_payload_v2(room_ids),
-            timeout=10.0,
-        )
-        if response.result_code != CommandResult.NOT_APPLICABLE:
-            return response
         return await self.send_command(
             TOPIC_CMD_START_CLEAN,
-            payload=self._build_room_clean_payload(room_ids),
+            payload=self._build_clean_payload_v2(room_ids),
             timeout=10.0,
         )
 
@@ -441,6 +358,8 @@ class NarwalClient:
         response = await self.send_command(TOPIC_CMD_GET_DEVICE_INFO)
 
         def _clean(value: Any) -> str:
+            if value is None:
+                return ""
             if isinstance(value, bytes):
                 return value.decode("utf-8", errors="replace").rstrip("\n")
             return str(value).rstrip("\n")
@@ -450,6 +369,8 @@ class NarwalClient:
             device_id=_clean(response.data.get("2", "")),
             firmware_version=_clean(response.data.get("3", "")),
         )
+        if not info.product_key or not info.device_id:
+            raise NarwalCommandError("Device-info response is empty or invalid")
         self.state.device_info = info
         if info.firmware_version:
             self.state.firmware_version = info.firmware_version
@@ -458,13 +379,25 @@ class NarwalClient:
     async def get_feature_list(self) -> dict[int, int]:
         """Query the robot's feature flags."""
         response = await self.send_command(TOPIC_CMD_GET_FEATURE_LIST)
-        return {int(key): int(value) for key, value in response.data.items()}
+        try:
+            features = {int(key): int(value) for key, value in response.data.items()}
+        except (TypeError, ValueError) as err:
+            raise NarwalCommandError("Feature-list response is invalid") from err
+        if not features or (1 in features and features[1] not in (0, 1)):
+            raise NarwalCommandError("Feature-list response is empty or invalid")
+        return features
 
     async def get_config(self) -> dict[str, Any]:
         """Read device settings used for capability discovery."""
         response = await self.send_command(TOPIC_CMD_GET_CONFIG)
+        if not response.success:
+            raise NarwalCommandError(
+                f"Cannot read device config (result code {response.result_code})"
+            )
         config = response.data.get("2", {})
-        return config if isinstance(config, dict) else {}
+        if not isinstance(config, dict) or not config:
+            raise NarwalCommandError("Device-config response is empty or invalid")
+        return config
 
     async def set_dry_mop_strength(self, strength: DryMopStrength | int) -> CommandResponse:
         """Set the station mop drying strength."""
@@ -569,24 +502,49 @@ class NarwalClient:
 
     async def get_map(self) -> MapData:
         """Download and parse the active map."""
+        map_generation = self._map_generation
         response = await self.send_command(TOPIC_CMD_GET_MAP, timeout=15.0)
+        if not response.success:
+            raise NarwalCommandError(f"Cannot download map (result code {response.result_code})")
         product_key = (
             self.state.device_info.product_key if self.state.device_info is not None else ""
         )
-        self.state.map_data = MapData.from_response(
-            response.data,
-            product_key=product_key,
-        )
-        payload = response.data.get("2")
-        if isinstance(payload, dict):
-            map_id = self._as_int(payload.get("1"))
-            if map_id is not None:
-                self.state.current_map_id = map_id
-        return self.state.map_data
+        try:
+            candidate = MapData.from_response(
+                response.data,
+                product_key=product_key,
+            )
+        except (OverflowError, TypeError, UnicodeError, ValueError) as err:
+            raise NarwalCommandError("Cannot parse the downloaded map") from err
+
+        if (
+            not map_dimensions_are_safe(candidate.width, candidate.height)
+            or candidate.resolution <= 0
+            or not candidate.compressed_map
+            or len(candidate.compressed_map) > MAX_COMPRESSED_MAP_BYTES
+        ):
+            raise NarwalCommandError("Downloaded map is empty or invalid")
+        if not await asyncio.to_thread(
+            map_payload_is_valid,
+            candidate.compressed_map,
+            candidate.width,
+            candidate.height,
+        ):
+            raise NarwalCommandError("Downloaded map pixel data is invalid")
+        if map_generation != self._map_generation:
+            raise NarwalCommandError("Downloaded map was superseded by a map switch")
+
+        map_id = self._as_int(candidate.raw.get("1"))
+        self.state.map_data = candidate
+        if map_id is not None:
+            self.state.current_map_id = map_id
+        return candidate
 
     async def get_all_maps(self) -> CommandResponse:
         """Download and retain the reduced list of saved maps."""
         response = await self.send_command(TOPIC_CMD_GET_ALL_MAPS, timeout=15.0)
+        if not response.success:
+            return response
         values = response.data.get("2", [])
         if isinstance(values, dict):
             values = [values]
@@ -605,7 +563,7 @@ class NarwalClient:
                 }
             )
         self.state.saved_maps = maps
-        self.state.saved_maps_supported = response.success
+        self.state.saved_maps_supported = True
         if self.state.current_map_id is None:
             current = next((item for item in maps if item["is_main"]), None)
             if current:
@@ -620,7 +578,11 @@ class NarwalClient:
             timeout=15.0,
         )
         if response.success:
+            self._map_generation += 1
             self.state.current_map_id = int(map_id)
+            self.state.map_data = None
+            self.state.map_display_data = None
+            self._last_display_map_time = 0.0
         return response
 
     async def get_battery_info(self) -> CommandResponse:
@@ -731,7 +693,7 @@ class NarwalClient:
     async def get_clean_progress(self) -> CommandResponse:
         """Request the current clean-progress detail payload."""
         response = await self.send_command(TOPIC_CMD_GET_CLEAN_PROGRESS)
-        if not response.not_applicable and response.data:
+        if not response.general_failed and response.data:
             self.state.clean_progress = self._plain_dict(response.data)
             self.state.clean_progress_supported = True
         return response

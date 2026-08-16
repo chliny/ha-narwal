@@ -26,6 +26,47 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Map payloads originate outside Home Assistant. Keep every allocation bounded
+# even if a robot or cloud response contains corrupt dimensions or a compressed
+# payload with an extreme expansion ratio.
+MAX_COMPRESSED_MAP_BYTES = 1_048_576
+MAX_DECOMPRESSED_MAP_BYTES = 8_388_608
+MAX_MAP_DIMENSION = 4_096
+MAX_MAP_PIXELS = 1_048_576
+
+
+class _MapResourceLimitError(Exception):
+    """Raised internally when a map exceeds a defensive resource limit."""
+
+
+def map_dimensions_are_safe(width: int, height: int) -> bool:
+    """Return whether map dimensions fit the renderer's allocation limits."""
+    if isinstance(width, bool) or isinstance(height, bool):
+        return False
+    if not isinstance(width, int) or not isinstance(height, int):
+        return False
+    return (
+        0 < width <= MAX_MAP_DIMENSION
+        and 0 < height <= MAX_MAP_DIMENSION
+        and width * height <= MAX_MAP_PIXELS
+    )
+
+
+def _decompress_with_limit(compressed: bytes, wbits: int) -> bytes:
+    """Decompress one zlib format without exceeding the output limit."""
+    decompressor = zlib.decompressobj(wbits)
+    output = decompressor.decompress(compressed, MAX_DECOMPRESSED_MAP_BYTES + 1)
+    if len(output) > MAX_DECOMPRESSED_MAP_BYTES or decompressor.unconsumed_tail:
+        raise _MapResourceLimitError
+
+    output += decompressor.flush(MAX_DECOMPRESSED_MAP_BYTES + 1 - len(output))
+    if len(output) > MAX_DECOMPRESSED_MAP_BYTES:
+        raise _MapResourceLimitError
+    if not decompressor.eof:
+        raise zlib.error("incomplete compressed map")
+    return output
+
+
 # Room color palette (RGB) — up to 22 rooms
 ROOM_COLORS: list[tuple[int, int, int]] = [
     (100, 149, 237),  # 1 - cornflower blue
@@ -119,32 +160,40 @@ def decompress_map(compressed: bytes) -> bytes:
     Returns:
         Decompressed bytes containing protobuf-wrapped pixel varints.
     """
-    if not compressed:
+    if not isinstance(compressed, bytes) or not compressed:
+        return b""
+    if len(compressed) > MAX_COMPRESSED_MAP_BYTES:
+        _LOGGER.warning(
+            "Rejecting compressed map larger than %d bytes",
+            MAX_COMPRESSED_MAP_BYTES,
+        )
         return b""
 
-    # Try zlib auto-detect (wbits=47 handles zlib, gzip, and raw)
-    try:
-        return zlib.decompress(compressed, 47)
-    except zlib.error:
-        pass
+    for wbits in (47, zlib.MAX_WBITS, -zlib.MAX_WBITS):
+        try:
+            return _decompress_with_limit(compressed, wbits)
+        except _MapResourceLimitError:
+            _LOGGER.warning(
+                "Rejecting map that expands beyond %d bytes",
+                MAX_DECOMPRESSED_MAP_BYTES,
+            )
+            return b""
+        except zlib.error:
+            continue
 
-    # Try zlib default
-    try:
-        return zlib.decompress(compressed)
-    except zlib.error:
-        pass
-
-    # Try raw deflate
-    try:
-        return zlib.decompress(compressed, -15)
-    except zlib.error:
-        pass
+    if compressed.startswith((b"\x78", b"\x1f\x8b")):
+        _LOGGER.warning("Rejecting malformed compressed map data (%d bytes)", len(compressed))
+        return b""
 
     _LOGGER.warning("Could not decompress map data (%d bytes), using raw", len(compressed))
     return compressed
 
 
-def _decode_packed_varints(data: bytes) -> list[int]:
+def _decode_packed_varints(
+    data: bytes,
+    *,
+    max_values: int = MAX_MAP_PIXELS,
+) -> list[int]:
     """Decode protobuf packed repeated varint field from decompressed map data.
 
     The decompressed data starts with a protobuf field header:
@@ -159,8 +208,9 @@ def _decode_packed_varints(data: bytes) -> list[int]:
     Returns:
         List of integer pixel values.
     """
-    if not data:
+    if not data or len(data) > MAX_DECOMPRESSED_MAP_BYTES or max_values <= 0:
         return []
+    max_values = min(max_values, MAX_MAP_PIXELS + 1)
 
     payload = data
     if data[0] == 0x0A:  # field 1, wire type 2
@@ -192,12 +242,26 @@ def _decode_packed_varints(data: bytes) -> list[int]:
             val |= (b & 0x7F) << shift
             if not (b & 0x80):
                 pixels.append(val)
+                if len(pixels) >= max_values:
+                    return pixels
                 break
             shift += 7
         else:
             break
 
     return pixels
+
+
+def map_payload_is_valid(compressed: bytes, width: int, height: int) -> bool:
+    """Validate that a bounded map payload contains exactly its declared pixels."""
+    if not map_dimensions_are_safe(width, height):
+        return False
+    decompressed = decompress_map(compressed)
+    if not decompressed:
+        return False
+    expected = width * height
+    pixels = _decode_packed_varints(decompressed, max_values=expected + 1)
+    return len(pixels) == expected
 
 
 def lookup_room_at_grid(
@@ -213,6 +277,8 @@ def lookup_room_at_grid(
       "room_N" for a valid room, "(empty)" for val=0,
       "(unassigned)" for 0x20/0x28, "(out_of_bounds)" if off grid.
     """
+    if not map_dimensions_are_safe(width, height):
+        return (-1, f"(invalid_dimensions: {width}x{height})")
     px = int(grid_x)
     py = int(grid_y)
     if px < 0 or px >= width or py < 0 or py >= height:
@@ -221,9 +287,9 @@ def lookup_room_at_grid(
     decompressed = decompress_map(compressed)
     if not decompressed:
         return (-1, "(no_data)")
-    pixels = _decode_packed_varints(decompressed)
 
     idx = py * width + px
+    pixels = _decode_packed_varints(decompressed, max_values=idx + 1)
     if idx >= len(pixels):
         return (-1, f"(idx_overflow: {idx} >= {len(pixels)})")
 
@@ -341,7 +407,11 @@ def render_map_png(
     Returns:
         PNG image as bytes, or empty bytes on failure.
     """
-    if not decompressed or width <= 0 or height <= 0:
+    if (
+        not decompressed
+        or len(decompressed) > MAX_DECOMPRESSED_MAP_BYTES
+        or not map_dimensions_are_safe(width, height)
+    ):
         return b""
 
     try:
@@ -350,20 +420,17 @@ def render_map_png(
         _LOGGER.error("Pillow is required for map rendering")
         return b""
 
-    pixels = _decode_packed_varints(decompressed)
     expected = width * height
+    pixels = _decode_packed_varints(decompressed, max_values=expected)
 
     if len(pixels) < expected:
         _LOGGER.warning(
-            "Map has %d pixels, expected %d (%dx%d) — padding",
+            "Map has %d pixels, expected %d (%dx%d)",
             len(pixels),
             expected,
             width,
             height,
         )
-        pixels.extend([0] * (expected - len(pixels)))
-    elif len(pixels) > expected:
-        pixels = pixels[:expected]
 
     img = Image.new("RGB", (width, height), COLOR_UNKNOWN)
     px = img.load()
@@ -477,17 +544,24 @@ def render_base_map(
         _LOGGER.error("Pillow is required for map rendering")
         return None
 
-    decompressed = decompress_map(compressed)
-    if not decompressed or width <= 0 or height <= 0:
+    if not map_dimensions_are_safe(width, height):
         return None
 
-    pixels = _decode_packed_varints(decompressed)
+    decompressed = decompress_map(compressed)
+    if not decompressed:
+        return None
+
     expected = width * height
+    pixels = _decode_packed_varints(decompressed, max_values=expected)
 
     if len(pixels) < expected:
-        pixels.extend([0] * (expected - len(pixels)))
-    elif len(pixels) > expected:
-        pixels = pixels[:expected]
+        _LOGGER.warning(
+            "Map has %d pixels, expected %d (%dx%d)",
+            len(pixels),
+            expected,
+            width,
+            height,
+        )
 
     img = Image.new("RGB", (width, height), COLOR_UNKNOWN)
     px = img.load()

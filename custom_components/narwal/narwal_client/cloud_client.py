@@ -36,6 +36,8 @@ _CLOUD_REACHABILITY_TIMEOUT = 150.0
 _ACTIVE_PUBLISH_TIMEOUTS = (2, 2, 4, 4, 8, 8, 16, 16, 32, 60)
 _ACTIVE_PUBLISH_DEFAULT_DURATION_MS = 60_000
 _TASK_RECORD_CACHE_LIMIT = 60
+_DEFAULT_MQTT_PORT = 8883
+_MQTT_AUTH_FAILURE_REASONS = {0x86, 0x87}
 
 _COMMON_THEMES = (
     "status/robot_base_status",
@@ -49,8 +51,45 @@ _COMMON_THEMES = (
     "develop/debug/robot_to_app",
     "status/streaming_info",
     "status/streaming_active_event",
+    "status/download_status",
+    "upgrade/upgrade_status",
     "general/topic",
 )
+
+
+def _parse_broker_endpoint(endpoint: str) -> tuple[str, int]:
+    """Parse a TLS MQTT endpoint returned by the cloud API."""
+    if not isinstance(endpoint, str) or not (endpoint := endpoint.strip()):
+        raise ValueError("empty MQTT broker endpoint")
+
+    if "://" in endpoint:
+        parsed = urlparse(endpoint)
+        if parsed.scheme.casefold() != "mqtts":
+            raise ValueError("MQTT broker endpoint must use TLS")
+    else:
+        parsed = urlparse(f"mqtts://{endpoint}")
+
+    if (
+        not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or any(character.isspace() for character in parsed.hostname)
+    ):
+        raise ValueError("invalid MQTT broker endpoint")
+    if parsed.netloc.endswith(":"):
+        raise ValueError("empty MQTT broker port")
+
+    try:
+        parsed_port = parsed.port
+    except ValueError as err:
+        raise ValueError("invalid MQTT broker port") from err
+    if parsed_port is not None and not 1 <= parsed_port <= 65_535:
+        raise ValueError("invalid MQTT broker port")
+    return parsed.hostname, parsed_port or _DEFAULT_MQTT_PORT
 
 
 def _varint(value: int) -> bytes:
@@ -237,6 +276,8 @@ class NarwalCloudClient(NarwalClient):
         self._subscribe_mid: int | None = None
         self._response_topics: set[str] = set()
         self._activation_task: asyncio.Task[None] | None = None
+        self._broadcast_tasks: set[asyncio.Task[None]] = set()
+        self._accept_mqtt_messages = False
         self.cloud_device: CloudDevice | None = None
 
     @property
@@ -463,8 +504,10 @@ class NarwalCloudClient(NarwalClient):
         except NarwalCloudError as err:
             raise NarwalConnectionError("Cannot connect to the Narwal cloud") from err
 
-        parsed = urlparse(broker_url)
-        host = parsed.hostname or broker_url.removeprefix("mqtts://")
+        try:
+            host, port = _parse_broker_endpoint(broker_url)
+        except ValueError as err:
+            raise NarwalConnectionError("Narwal returned an invalid MQTT broker endpoint") from err
         client = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
             client_id=f"app_{account.uuid}_{uuid.uuid4()}",
@@ -477,6 +520,7 @@ class NarwalCloudClient(NarwalClient):
         client.on_message = self._on_mqtt_message
         client.on_subscribe = self._on_mqtt_subscribe
         self._mqtt = client
+        self._accept_mqtt_messages = True
 
         properties = mqtt.Properties(mqtt.PacketTypes.CONNECT)
         properties.ReceiveMaximum = 128
@@ -486,7 +530,7 @@ class NarwalCloudClient(NarwalClient):
             await asyncio.to_thread(
                 client.connect,
                 host=host,
-                port=8883,
+                port=port,
                 keepalive=15,
                 clean_start=True,
                 properties=properties,
@@ -501,7 +545,10 @@ class NarwalCloudClient(NarwalClient):
             MQTTException,
             NarwalConnectionError,
         ) as err:
-            client.loop_stop()
+            self._accept_mqtt_messages = False
+            self._loop = None
+            await asyncio.to_thread(client.loop_stop)
+            await self._async_cancel_broadcast_tasks()
             self._mqtt = None
             self._mqtt_ready.clear()
             if isinstance(err, NarwalConnectionError):
@@ -520,28 +567,38 @@ class NarwalCloudClient(NarwalClient):
         _properties: mqtt.Properties | None,
     ) -> None:
         loop = self._loop
-        if loop is None:
+        if loop is None or client is not self._mqtt:
             return
-        if int(reason_code.value) != 0:
+        reason_value = int(reason_code.value)
+        if reason_value != 0:
+            error_type = (
+                NarwalAuthenticationError
+                if reason_value in _MQTT_AUTH_FAILURE_REASONS
+                else NarwalConnectionError
+            )
             loop.call_soon_threadsafe(
                 self._fail_connect,
-                NarwalConnectionError(f"MQTT rejected connection ({reason_code.value})"),
+                error_type(f"MQTT rejected connection ({reason_value})"),
+                client,
             )
             return
         prefix = f"{self.topic_prefix}/{self.device_id}"
         topics = [(f"{prefix}/{topic}", mqtt.SubscribeOptions(qos=0)) for topic in _COMMON_THEMES]
         result, mid = client.subscribe(topics)
+        if client is not self._mqtt:
+            return
         if result != mqtt.MQTT_ERR_SUCCESS:
             loop.call_soon_threadsafe(
                 self._fail_connect,
                 NarwalConnectionError(f"MQTT subscribe failed ({result})"),
+                client,
             )
             return
         self._subscribe_mid = mid
 
     def _on_mqtt_subscribe(
         self,
-        _client: mqtt.Client,
+        client: mqtt.Client,
         _userdata: object,
         mid: int,
         reason_codes: list[mqtt.ReasonCode],
@@ -549,18 +606,31 @@ class NarwalCloudClient(NarwalClient):
     ) -> None:
         """Mark the transport ready only after all subscriptions are accepted."""
         loop = self._loop
-        if loop is None or mid != self._subscribe_mid:
+        if loop is None or client is not self._mqtt or mid != self._subscribe_mid:
             return
         rejected = [int(code.value) for code in reason_codes if int(code.value) >= 128]
         if rejected:
             loop.call_soon_threadsafe(
                 self._fail_connect,
                 NarwalConnectionError(f"MQTT subscriptions rejected ({rejected[0]})"),
+                client,
             )
             return
-        loop.call_soon_threadsafe(self._mqtt_ready.set)
+        loop.call_soon_threadsafe(self._mark_subscribed, client, mid)
 
-    def _fail_connect(self, error: Exception) -> None:
+    def _mark_subscribed(self, source_client: mqtt.Client, mid: int) -> None:
+        """Mark only the current client's matching subscription as ready."""
+        if source_client is not self._mqtt or mid != self._subscribe_mid:
+            return
+        self._mqtt_ready.set()
+
+    def _fail_connect(
+        self,
+        error: Exception,
+        source_client: mqtt.Client | None = None,
+    ) -> None:
+        if source_client is not None and source_client is not self._mqtt:
+            return
         self._connect_error = error
         for _response_topic, future in self._pending.values():
             if not future.done():
@@ -569,16 +639,19 @@ class NarwalCloudClient(NarwalClient):
 
     def _on_mqtt_disconnect(
         self,
-        _client: mqtt.Client,
+        client: mqtt.Client,
         _userdata: object,
         _disconnect_flags: mqtt.DisconnectFlags,
         _reason_code: mqtt.ReasonCode,
         _properties: mqtt.Properties | None,
     ) -> None:
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._mark_disconnected)
+        if self._loop is not None and client is self._mqtt:
+            self._loop.call_soon_threadsafe(self._mark_disconnected, client)
 
-    def _mark_disconnected(self) -> None:
+    def _mark_disconnected(self, source_client: mqtt.Client | None = None) -> None:
+        if source_client is not None and source_client is not self._mqtt:
+            return
+        self._accept_mqtt_messages = False
         self._mqtt_ready.clear()
         self._subscribe_mid = None
         self._response_topics.clear()
@@ -595,12 +668,12 @@ class NarwalCloudClient(NarwalClient):
 
     def _on_mqtt_message(
         self,
-        _client: mqtt.Client,
+        client: mqtt.Client,
         _userdata: object,
         message: mqtt.MQTTMessage,
     ) -> None:
         loop = self._loop
-        if loop is None:
+        if loop is None or not self._accept_mqtt_messages or client is not self._mqtt:
             return
         raw = bytes(message.payload)
         if message.topic.endswith("/response"):
@@ -610,22 +683,63 @@ class NarwalCloudClient(NarwalClient):
                 correlation,
                 message.topic,
                 raw,
+                client,
             )
             return
         loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self._handle_cloud_broadcast(message.topic, raw))
+            self._schedule_cloud_broadcast,
+            message.topic,
+            raw,
+            client,
         )
+
+    def _schedule_cloud_broadcast(
+        self,
+        topic: str,
+        raw: bytes,
+        source_client: mqtt.Client | None = None,
+    ) -> None:
+        """Create and retain a broadcast task until its result is consumed."""
+        if not self._accept_mqtt_messages or (
+            source_client is not None and source_client is not self._mqtt
+        ):
+            return
+        task = asyncio.create_task(
+            self._handle_cloud_broadcast(topic, raw),
+            name="narwal-cloud-broadcast",
+        )
+        self._broadcast_tasks.add(task)
+        task.add_done_callback(self._broadcast_task_done)
+
+    def _broadcast_task_done(self, task: asyncio.Task[None]) -> None:
+        """Consume an unexpected task exception so it cannot escape the loop."""
+        self._broadcast_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            _LOGGER.debug(
+                "Narwal cloud broadcast handler failed",
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     def _deliver_response(
         self,
         correlation: str,
         response_topic: str,
         raw: bytes,
+        source_client: mqtt.Client | None = None,
     ) -> None:
+        if not self._accept_mqtt_messages or (
+            source_client is not None and source_client is not self._mqtt
+        ):
+            return
         self._mark_robot_reachable()
         pending = self._pending.get(correlation)
         future = pending[1] if pending is not None and pending[0] == response_topic else None
-        if future is None:
+        # A non-empty correlation belongs to a specific requester. Never route
+        # another app's or a timed-out request's response by topic alone.
+        if future is None and not correlation:
             topic_futures = [
                 pending_future
                 for pending_topic, pending_future in self._pending.values()
@@ -655,9 +769,18 @@ class NarwalCloudClient(NarwalClient):
         short_topic = topic.removeprefix(prefix)
         if short_topic == "general/topic" and inner_url:
             short_topic = inner_url.lstrip("/")
-        handled = await self._handle_broadcast(short_topic, payload)
-        if not handled and not was_reachable and self.on_state_update is not None:
-            self.on_state_update(self.state)
+        try:
+            handled = await self._handle_broadcast(short_topic, payload)
+            if not handled and not was_reachable and self.on_state_update is not None:
+                self.on_state_update(self.state)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.debug(
+                "Discarding invalid Narwal cloud broadcast for topic %s",
+                short_topic,
+                exc_info=True,
+            )
 
     @classmethod
     def _build_cloud_active_payload(cls) -> bytes:
@@ -788,14 +911,16 @@ class NarwalCloudClient(NarwalClient):
         try:
             _inner_url, response_payload = _decode_envelope(raw)
             decoded = self._decode_protobuf(response_payload)
-        except Exception:
-            response_payload = b""
-            decoded = {}
-        raw_field1 = decoded.get("1", 0)
-        try:
-            result_code = int(raw_field1)
-        except (ValueError, TypeError):
-            result_code = 1
+        except Exception as err:
+            raise NarwalCommandError(f"Malformed response for command '{short_topic}'") from err
+        if not isinstance(decoded, dict) or not decoded:
+            raise NarwalCommandError(f"Empty response for command '{short_topic}'")
+
+        raw_field1 = decoded.get("1")
+        result_code = 0
+        if raw_field1 is not None and not isinstance(raw_field1, (bool, dict, list, tuple)):
+            with contextlib.suppress(ValueError, TypeError):
+                result_code = int(raw_field1)
         return CommandResponse(
             result_code=result_code,
             data=decoded,
@@ -832,21 +957,43 @@ class NarwalCloudClient(NarwalClient):
         client = self._mqtt
         if client is None or self._mqtt_ready.is_set():
             return
+        self._accept_mqtt_messages = False
+        self._loop = None
         self._mqtt = None
         await asyncio.to_thread(client.loop_stop)
+        await self._async_cancel_broadcast_tasks()
+
+    async def _async_cancel_broadcast_tasks(self) -> None:
+        """Cancel and await every retained MQTT broadcast task."""
+        while broadcast_tasks := tuple(self._broadcast_tasks):
+            for task in broadcast_tasks:
+                task.cancel()
+            await asyncio.gather(*broadcast_tasks, return_exceptions=True)
 
     async def disconnect(self) -> None:
         """Close MQTT without blocking Home Assistant's event loop."""
         self._should_reconnect = False
+        # Close admission before yielding so callbacks already queued by the
+        # Paho thread cannot create work after the first task snapshot.
+        self._accept_mqtt_messages = False
+        self._loop = None
         activation_task = self._activation_task
         self._activation_task = None
         if activation_task is not None:
             activation_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await activation_task
+        self._mark_disconnected()
+        await self._async_cancel_broadcast_tasks()
         client = self._mqtt
         self._mqtt = None
-        self._mqtt_ready.clear()
-        if client is not None:
-            client.disconnect()
-            await asyncio.to_thread(client.loop_stop)
+        try:
+            if client is not None:
+                try:
+                    client.disconnect()
+                finally:
+                    await asyncio.to_thread(client.loop_stop)
+        finally:
+            # A callback may already have crossed the thread boundary before
+            # admission closed. Drain once more after the network loop stops.
+            await self._async_cancel_broadcast_tasks()

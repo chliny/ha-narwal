@@ -34,9 +34,7 @@ def version_from_tag(tag: str) -> str:
     """Return a manifest-compatible version extracted from a SemVer tag."""
     match = SEMVER_TAG.fullmatch(tag)
     if match is None:
-        raise ManifestVersionError(
-            f"tag {tag!r} is not a valid semantic version (expected vX.Y.Z)"
-        )
+        raise ManifestVersionError(f"tag {tag!r} is not a valid semantic version (expected vX.Y.Z)")
     return match.group("version")
 
 
@@ -65,9 +63,7 @@ def update_manifest_version(path: Path, target_version: str) -> bool:
     replacement = rf'\g<prefix>"{target_version}"\g<suffix>'
     updated, count = VERSION_LINE.subn(replacement, content)
     if count != 1:
-        raise ManifestVersionError(
-            f"expected exactly one version field in {path}, found {count}"
-        )
+        raise ManifestVersionError(f"expected exactly one version field in {path}, found {count}")
 
     try:
         path.write_text(updated, encoding="utf-8")

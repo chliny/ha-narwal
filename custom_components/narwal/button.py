@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
@@ -56,7 +56,7 @@ def _reset_protocol(consumable: ConsumableInfo) -> tuple[str, int] | None:
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Narwal base-station buttons."""
     del hass
@@ -154,7 +154,9 @@ class NarwalStartCleanPlanButton(NarwalEntity, ButtonEntity):
             state = self.coordinator.data
             if state and state.clean_plans:
                 raw_plan_id = state.clean_plans[0].get("id")
-                if not isinstance(raw_plan_id, bool):
+                if isinstance(raw_plan_id, int) and not isinstance(raw_plan_id, bool):
+                    plan_id = raw_plan_id
+                elif isinstance(raw_plan_id, (str, bytes, bytearray)):
                     try:
                         plan_id = int(raw_plan_id)
                     except (TypeError, ValueError):

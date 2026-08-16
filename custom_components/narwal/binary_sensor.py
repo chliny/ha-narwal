@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
@@ -14,13 +14,15 @@ from .entity import NarwalEntity
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Narwal binary sensor entities."""
     coordinator = entry.runtime_data
-    async_add_entities([
-        NarwalDockedSensor(coordinator),
-    ])
+    async_add_entities(
+        [
+            NarwalDockedSensor(coordinator),
+        ]
+    )
 
 
 class NarwalDockedSensor(NarwalEntity, BinarySensorEntity):

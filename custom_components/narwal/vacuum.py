@@ -5,19 +5,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from homeassistant.components import vacuum as vacuum_component
 from homeassistant.components.vacuum import (
     StateVacuumEntity,
     VacuumActivity,
     VacuumEntityFeature,
 )
-
-try:
-    from homeassistant.components.vacuum import Segment
-except ImportError:
-    Segment = None  # HA < 2026.3 — room cleaning unavailable
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
 from .const import FAN_SPEED_LIST, FAN_SPEED_MAP
@@ -26,6 +22,15 @@ from .entity import NarwalEntity
 from .narwal_client import CommandResponse, CommandResult, WorkingStatus
 
 _LOGGER = logging.getLogger(__name__)
+
+# HA added the clean-area feature together with Segment in 2026.3. getattr
+# keeps imports working on the integration's HA 2025.1 minimum version.
+_Segment = getattr(vacuum_component, "Segment", None)
+_CLEAN_AREA_FEATURE: VacuumEntityFeature = getattr(
+    VacuumEntityFeature,
+    "CLEAN_AREA",
+    VacuumEntityFeature(0),
+)
 
 WORKING_STATUS_TO_ACTIVITY: dict[WorkingStatus, VacuumActivity] = {
     WorkingStatus.IDLE: VacuumActivity.IDLE,
@@ -41,7 +46,7 @@ WORKING_STATUS_TO_ACTIVITY: dict[WorkingStatus, VacuumActivity] = {
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Narwal vacuum entity."""
     coordinator = entry.runtime_data
@@ -59,13 +64,12 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         | VacuumEntityFeature.PAUSE
         | VacuumEntityFeature.RETURN_HOME
         | VacuumEntityFeature.LOCATE
-    ) | (VacuumEntityFeature.CLEAN_AREA if Segment is not None else VacuumEntityFeature(0))
+    ) | (_CLEAN_AREA_FEATURE if _Segment is not None else VacuumEntityFeature(0))
 
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         """Initialize the vacuum entity."""
         super().__init__(coordinator)
         self._set_entity_identity("vacuum", "vacuum")
-        self._last_fan_speed: str | None = None
 
     @property
     def supported_features(self) -> VacuumEntityFeature:
@@ -76,9 +80,9 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         return features
 
     @property
-    def fan_speed_list(self) -> list[str] | None:
+    def fan_speed_list(self) -> list[str]:
         """Return supported fan choices when suction control is available."""
-        return FAN_SPEED_LIST if self.coordinator.supports_fan_speed else None
+        return FAN_SPEED_LIST if self.coordinator.supports_fan_speed else []
 
     @staticmethod
     def _require_success(response: CommandResponse, action: str) -> None:
@@ -126,15 +130,10 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
 
     @property
     def fan_speed(self) -> str | None:
-        """Return the current fan speed.
-
-        The robot protocol does not broadcast the active fan speed setting,
-        so we track the last value set via the integration. Returns None
-        until the user sets a fan speed for the first time.
-        """
-        if self._last_fan_speed is not None:
-            return self._last_fan_speed
+        """Return the latest fan speed reported by the robot."""
         raw = self.coordinator.client.state.raw_base_status.get("26")
+        if raw is None:
+            return None
         try:
             level = int(raw)
         except (TypeError, ValueError):
@@ -165,7 +164,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             self._require_success(response, "start")
         await self._async_refresh_after_write()
 
-    async def async_stop(self, **kwargs) -> None:
+    async def async_stop(self, **kwargs: Any) -> None:
         """Stop cleaning."""
         response = await self._async_await_command(
             self.coordinator.client.stop(),
@@ -183,7 +182,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         self._require_success(response, "pause")
         await self._async_refresh_after_write()
 
-    async def async_return_to_base(self, **kwargs) -> None:
+    async def async_return_to_base(self, **kwargs: Any) -> None:
         """Return to the dock."""
         response = await self._async_await_command(
             self.coordinator.client.return_to_base(timeout=self._ACTION_TIMEOUT),
@@ -192,7 +191,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         self._require_success(response, "return-to-base")
         await self._async_refresh_after_write()
 
-    async def async_locate(self, **kwargs) -> None:
+    async def async_locate(self, **kwargs: Any) -> None:
         """Locate the vacuum — robot says 'Robot is here'."""
         response = await self._async_await_command(
             self.coordinator.client.locate(),
@@ -201,7 +200,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         self._require_success(response, "locate")
         await self._async_refresh_after_write()
 
-    async def async_set_fan_speed(self, fan_speed: str, **kwargs) -> None:
+    async def async_set_fan_speed(self, fan_speed: str, **kwargs: Any) -> None:
         """Set the fan speed."""
         level = FAN_SPEED_MAP.get(fan_speed)
         if level is None:
@@ -211,13 +210,15 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             "set fan speed",
         )
         self._require_success(response, "set fan speed")
-        self._last_fan_speed = fan_speed
+        # Reflect the accepted value immediately. The next complete base-status
+        # payload replaces raw_base_status, so app/device changes still win.
+        self.coordinator.client.state.raw_base_status["26"] = int(level)
         self.async_write_ha_state()
         await self._async_refresh_after_write()
 
     # --- Segment API (HA 2026.3 room-specific cleaning) ---
 
-    async def async_get_segments(self) -> list:
+    async def async_get_segments(self) -> list[Any]:
         """Return cleanable room segments from map data.
 
         Maps RoomInfo from get_map to HA Segment objects and preserves the
@@ -227,7 +228,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         the robot first.
         Returns [] when HA < 2026.3 (Segment class unavailable).
         """
-        if Segment is None:
+        if _Segment is None:
             return []
         state = self.coordinator.data
         if state is None or state.map_data is None:
@@ -235,7 +236,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             last = getattr(self, "last_seen_segments", None)
             return list(last) if last else []
         return [
-            Segment(
+            _Segment(
                 id=str(room.room_id),
                 name=room.display_name,
                 group="Rooms" if room.category == 1 else "Utility" if room.category == 2 else None,
@@ -289,6 +290,8 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         If rooms have changed (added, removed, or renamed), creates a repair
         issue so the user can update their segment-to-area mappings.
         """
+        if _Segment is None or self.registry_entry is None:
+            return
         last = getattr(self, "last_seen_segments", None)
         if last is None:
             return  # No mapping configured yet
@@ -305,4 +308,6 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
                 len(last_set),
                 len(current_set),
             )
-            self.async_create_segments_issue()
+            create_issue = getattr(self, "async_create_segments_issue", None)
+            if create_issue is not None:
+                create_issue()

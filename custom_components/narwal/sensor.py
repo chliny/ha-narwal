@@ -21,7 +21,7 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import NarwalConfigEntry
@@ -52,6 +52,21 @@ class NarwalSensorEntityDescription(SensorEntityDescription):
     value_fn: Callable[[NarwalState], float | str | None]
 
 
+def _battery_level(state: NarwalState) -> int | None:
+    """Return a known battery percentage, including a real zero reading."""
+    if state.battery_level > 0:
+        return state.battery_level
+    raw = state.raw_base_status.get("2")
+    if (
+        state.battery_level == 0
+        and isinstance(raw, int | float)
+        and not isinstance(raw, bool)
+        and raw == 0
+    ):
+        return 0
+    return None
+
+
 SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
     NarwalSensorEntityDescription(
         key="battery",
@@ -59,7 +74,7 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         # battery_level comes from field 2 (real-time SOC as float32)
-        value_fn=lambda state: state.battery_level if state.battery_level > 0 else None,
+        value_fn=_battery_level,
     ),
     NarwalSensorEntityDescription(
         key="cleaning_area",
@@ -89,7 +104,7 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Narwal sensor entities."""
     coordinator = entry.runtime_data
@@ -259,7 +274,7 @@ class NarwalLatestNotificationSensor(NarwalEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Cloud messages remain available while the robot sleeps."""
-        return self.coordinator.last_update_success
+        return self.coordinator.cloud_metadata_available
 
 
 class NarwalTaskRecordSensor(NarwalEntity, SensorEntity):
@@ -303,6 +318,14 @@ class NarwalTaskRecordSensor(NarwalEntity, SensorEntity):
         detail = _task_record_detail(state, record)
         attributes["task_name"] = _task_record_name(record, detail)
         return attributes
+
+    @property
+    def available(self) -> bool:
+        """Return whether cloud metadata remains reachable."""
+        state = self.coordinator.data
+        return bool(
+            self.coordinator.cloud_metadata_available and state and state.task_records_supported
+        )
 
 
 def _task_record_datetime(record: dict[str, object], key: str) -> datetime | None:
@@ -453,6 +476,14 @@ class NarwalDustBagHealthSensor(NarwalEntity, SensorEntity):
             attributes["history"] = state.dust_bag_health[-31:]
         return attributes
 
+    @property
+    def available(self) -> bool:
+        """Return whether cloud dust-bag metadata is available."""
+        state = self.coordinator.data
+        return bool(
+            self.coordinator.cloud_metadata_available and state and state.dust_bag_health_supported
+        )
+
 
 class NarwalCleanTimelineSensor(NarwalEntity, SensorEntity):
     """Current real-time cleaning timeline."""
@@ -513,9 +544,9 @@ class NarwalCleanProgressSensor(NarwalEntity, SensorEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Write state only for active cleaning updates."""
-        if self._capture_active_progress():
-            self.async_write_ha_state()
+        """Capture active progress and always propagate coordinator state."""
+        self._capture_active_progress()
+        super()._handle_coordinator_update()
 
 
 _CONSUMABLE_ICON_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -695,4 +726,4 @@ class NarwalConsumableSensor(NarwalEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Cloud lifetime data does not depend on the robot being awake."""
-        return self.coordinator.last_update_success and self._consumable is not None
+        return self.coordinator.cloud_metadata_available and self._consumable is not None

@@ -51,9 +51,7 @@ class NarwalEntity(CoordinatorEntity[NarwalCoordinator]):
 
     def _set_entity_identity(self, platform: str, name: str) -> None:
         """Set stable unique_id and deterministic entity_id together."""
-        device_id = _identity_part(
-            str(self.coordinator.config_entry.data["device_id"])
-        )
+        device_id = _identity_part(str(self.coordinator.config_entry.data["device_id"]))
         identity = f"{DOMAIN}_{device_id}_{_identity_part(name)}"
         self._attr_unique_id = identity
         self.entity_id = f"{platform}.{identity}"
@@ -75,7 +73,4 @@ class NarwalEntity(CoordinatorEntity[NarwalCoordinator]):
     @property
     def available(self) -> bool:
         """Return True if the entity is available."""
-        return (
-            self.coordinator.last_update_success
-            and self.coordinator.client.robot_awake
-        )
+        return self.coordinator.last_update_success and self.coordinator.client.robot_awake

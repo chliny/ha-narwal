@@ -58,6 +58,11 @@
         "name": "Vacuum"
       }
     },
+    "camera": {
+      "map": {
+        "name": "Map"
+      }
+    },
     "sensor": {
       "cleaning_area": {
         "name": "Cleaning area"
@@ -137,9 +142,6 @@
           "on": "Docked",
           "off": "Undocked"
         }
-      },
-      "charging": {
-        "name": "Charging"
       }
     },
     "button": {

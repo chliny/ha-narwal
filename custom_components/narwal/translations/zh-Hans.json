@@ -58,6 +58,11 @@
         "name": "扫拖机器人"
       }
     },
+    "camera": {
+      "map": {
+        "name": "地图"
+      }
+    },
     "sensor": {
       "cleaning_area": {
         "name": "清扫面积"
@@ -137,9 +142,6 @@
           "on": "已回基站",
           "off": "离开基站"
         }
-      },
-      "charging": {
-        "name": "充电中"
       }
     },
     "button": {

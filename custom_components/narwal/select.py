@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
+from typing import ClassVar
+
 from homeassistant.components.select import SelectEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.translation import async_get_translations
 
 from . import NarwalConfigEntry
 from .const import DOMAIN
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
-from .narwal_client import CustomCleanStrategy, DryMopStrength, MopHumidity
+from .narwal_client import (
+    CustomCleanStrategy,
+    DryMopStrength,
+    MopHumidity,
+    NarwalCommandError,
+    NarwalConnectionError,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 MOP_HUMIDITY_OPTIONS: dict[str, MopHumidity] = {
     "dry": MopHumidity.DRY,
@@ -43,7 +55,7 @@ CLEAN_PLAN_MODE_TRANSLATION_KEYS: dict[int, str] = {
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: NarwalConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Narwal cleaning preference selects."""
     coordinator = entry.runtime_data
@@ -97,17 +109,12 @@ class NarwalMopHumiditySelect(NarwalEntity, SelectEntity):
     def __init__(self, coordinator: NarwalCoordinator) -> None:
         super().__init__(coordinator)
         self._set_entity_identity("select", "mop_humidity")
-        self._current_option: str | None = None
 
     @property
     def current_option(self) -> str | None:
-        """Return the robot value or the last value selected in HA."""
-        if self._current_option is not None:
-            return self._current_option
-        raw = self.coordinator.client.state.raw_base_status.get("29")
-        try:
-            level = int(raw)
-        except (TypeError, ValueError):
+        """Return the latest mop humidity reported by the robot."""
+        level = _optional_int(self.coordinator.client.state.raw_base_status.get("29"))
+        if level is None:
             return None
         return next(
             (name for name, value in MOP_HUMIDITY_OPTIONS.items() if int(value) == level),
@@ -127,7 +134,9 @@ class NarwalMopHumiditySelect(NarwalEntity, SelectEntity):
             raise HomeAssistantError(
                 f"Narwal action failed with result code {response.result_code}"
             )
-        self._current_option = option
+        # Reflect the accepted value immediately. A later base-status payload
+        # replaces this raw state and therefore remains authoritative.
+        self.coordinator.client.state.raw_base_status["29"] = int(level)
         self.async_write_ha_state()
         await self.coordinator.async_request_refresh()
 
@@ -135,7 +144,8 @@ class NarwalMopHumiditySelect(NarwalEntity, SelectEntity):
 class NarwalConfigSelect(NarwalEntity, SelectEntity):
     """Base class for selects backed by config/get and config/set."""
 
-    config_field: str
+    config_field: ClassVar[str]
+    option_map: ClassVar[Mapping[str, int]]
 
     @property
     def current_option(self) -> str | None:
@@ -143,9 +153,8 @@ class NarwalConfigSelect(NarwalEntity, SelectEntity):
         raw = self.coordinator.device_config.get(self.config_field)
         if isinstance(raw, dict):
             raw = raw.get("1")
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
+        value = _optional_int(raw)
+        if value is None:
             return None
         return next(
             (option for option, enum_value in self.option_map.items() if enum_value == value),
@@ -170,12 +179,12 @@ class NarwalCleanStrategySelect(NarwalConfigSelect):
         strategy = CLEAN_STRATEGY_OPTIONS.get(option)
         if strategy is None:
             raise HomeAssistantError(f"Unsupported cleaning strategy: {option}")
+        raw_current = self.coordinator.device_config.get("18")
+        current = raw_current if isinstance(raw_current, dict) else None
         response = await self._async_await_command(
             self.coordinator.client.set_custom_clean_strategy(
                 strategy,
-                self.coordinator.device_config.get("18")
-                if isinstance(self.coordinator.device_config.get("18"), dict)
-                else None,
+                current,
             ),
             "set cleaning strategy",
         )
@@ -183,9 +192,9 @@ class NarwalCleanStrategySelect(NarwalConfigSelect):
             raise HomeAssistantError(
                 f"Narwal action failed with result code {response.result_code}"
             )
-        current = self.coordinator.device_config.get("18")
-        if isinstance(current, dict):
-            current["1"] = int(strategy)
+        stored_config = self.coordinator.device_config.get("18")
+        if isinstance(stored_config, dict):
+            stored_config["1"] = int(strategy)
         else:
             self.coordinator.device_config["18"] = {"1": int(strategy)}
         self.async_write_ha_state()
@@ -237,6 +246,12 @@ def _optional_int(value: object) -> int | None:
     """Return an integer for a cloud option ID without accepting booleans."""
     if isinstance(value, bool) or value is None:
         return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if not isinstance(value, (str, bytes, bytearray)):
+        return None
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -252,7 +267,9 @@ def _clean_plan_options(
         plan = dict(value)
         if not plan.get("name"):
             clean_mode = _optional_int(plan.get("clean_mode"))
-            translation_key = CLEAN_PLAN_MODE_TRANSLATION_KEYS.get(clean_mode)
+            translation_key = (
+                CLEAN_PLAN_MODE_TRANSLATION_KEYS.get(clean_mode) if clean_mode is not None else None
+            )
             translated_name = (
                 translations.get(
                     f"component.{DOMAIN}.selector.clean_plan.options.{translation_key}"
@@ -348,8 +365,18 @@ class NarwalMapSelect(NarwalEntity, SelectEntity):
             raise HomeAssistantError(
                 f"Narwal action failed with result code {response.result_code}"
             )
-        await self.coordinator.client.get_map()
-        await self.coordinator.client.get_all_maps()
+        # The map switch already succeeded and invalidated the previous map.
+        # A follow-up download failure should not report the switch itself as
+        # failed; the coordinator will retry while map_data remains missing.
+        try:
+            await self.coordinator.client.get_map()
+            await self.coordinator.client.get_all_maps()
+        except (NarwalCommandError, NarwalConnectionError):
+            _LOGGER.debug(
+                "Map switched to %d; refreshed map data will be retried",
+                map_id,
+                exc_info=True,
+            )
         self.coordinator.async_set_updated_data(self.coordinator.client.state)
 
 

@@ -10,7 +10,8 @@ from collections.abc import Awaitable, Callable
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -79,6 +80,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=DOMAIN,
             update_interval=POLL_INTERVAL,
         )
@@ -106,6 +108,10 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._extended_refresh_count = 0
         self._last_firmware_refresh = 0.0
         self.selected_clean_plan_id: int | None = None
+        self.cloud_metadata_available = False
+        self._device_registry_firmware_version: str | None = None
+        self._shutdown_lock = asyncio.Lock()
+        self._shutdown_complete = False
 
     @property
     def supports_single_dry_mop(self) -> bool:
@@ -236,13 +242,19 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 task_record_pages=task_record_pages,
             )
         except NarwalAuthenticationError:
+            self.cloud_metadata_available = False
             _LOGGER.warning("Narwal cloud credentials require reauthentication")
             self.config_entry.async_start_reauth(self.hass)
         except Exception:
+            self.cloud_metadata_available = False
             _LOGGER.debug(
                 "Could not refresh Narwal consumables or notifications",
                 exc_info=True,
             )
+        else:
+            # The client tolerates individual metadata endpoint failures and
+            # returns normally when at least one source succeeds.
+            self.cloud_metadata_available = True
 
     async def _async_refresh_firmware_update(self) -> None:
         """Refresh the read-only cloud firmware availability state."""
@@ -261,10 +273,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     async def _async_maybe_refresh_firmware_update(self) -> None:
         """Refresh firmware availability no more than once per hour."""
-        if (
-            time.monotonic() - self._last_firmware_refresh
-            >= FIRMWARE_REFRESH_INTERVAL
-        ):
+        if time.monotonic() - self._last_firmware_refresh >= FIRMWARE_REFRESH_INTERVAL:
             await self._async_refresh_firmware_update()
 
     async def _async_refresh_extended_state(self, *, include_static: bool) -> None:
@@ -304,9 +313,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 )
         if include_static and self.client.state.current_voice.get("language"):
             try:
-                await self.client.get_voice_packs(
-                    _app_language_code(self.hass.config.language)
-                )
+                await self.client.get_voice_packs(_app_language_code(self.hass.config.language))
             except Exception:
                 _LOGGER.debug(
                     "Optional Narwal voice-package catalog is unavailable",
@@ -367,6 +374,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                     f"{DOMAIN}_resub",
                 )
 
+        self._async_update_device_firmware_version(state.firmware_version)
         self.async_set_updated_data(state)
 
         # Broadcast arrived — switch back to normal polling if in fast mode
@@ -378,6 +386,26 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 state.working_status.name,
             )
 
+    @callback
+    def _async_update_device_firmware_version(self, firmware_version: str) -> None:
+        """Keep the device registry firmware version synchronized."""
+        firmware_version = firmware_version.strip()
+        if not firmware_version or firmware_version == self._device_registry_firmware_version:
+            return
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device(
+            identifiers={
+                (DOMAIN, str(self.config_entry.data["device_id"])),
+            }
+        )
+        if device is None:
+            # Platforms may not have created the registry entry yet. Leave the
+            # cache unset so the next coordinator update retries the lookup.
+            return
+        if device.sw_version != firmware_version:
+            registry.async_update_device(device.id, sw_version=firmware_version)
+        self._device_registry_firmware_version = firmware_version
+
     async def _fetch_missing_map(self) -> None:
         """Fetch static map when it's missing (get_map failed at startup)."""
         try:
@@ -385,8 +413,12 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             _LOGGER.info("Static map loaded (was missing at startup)")
         except Exception:
             _LOGGER.debug("Map fetch failed — will retry on next broadcast")
-            self._map_fetch_pending = False
             return
+        finally:
+            # This flag tracks an in-flight request, not whether a map has ever
+            # loaded.  Clear it on success too so a later invalidation can
+            # schedule a fresh recovery request.
+            self._map_fetch_pending = False
         try:
             await self.client.subscribe_to_topics()
         except Exception:
@@ -469,9 +501,19 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
     async def async_shutdown(self) -> None:
         """Disconnect from the vacuum."""
-        await self.client.disconnect()
-        if self._listen_task and not self._listen_task.done():
-            self._listen_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._listen_task
-        await super().async_shutdown()
+        async with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+
+            # Stop callbacks before awaiting teardown so no late MQTT message
+            # can publish coordinator data while the entry is unloading.
+            self.client.on_state_update = None
+            if self._listen_task and not self._listen_task.done():
+                self._listen_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._listen_task
+            try:
+                await self.client.disconnect()
+            finally:
+                await super().async_shutdown()
+                self._shutdown_complete = True
