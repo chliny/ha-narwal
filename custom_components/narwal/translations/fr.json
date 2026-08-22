@@ -142,6 +142,12 @@
           "on": "À la station",
           "off": "Hors de la station"
         }
+      },
+      "consumable_reminder": {
+        "name": "Rappel de consommable",
+        "state_attributes": {
+          "items": {"name": "Éléments concernés"}
+        }
       }
     },
     "button": {

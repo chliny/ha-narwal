@@ -36,17 +36,27 @@ class NarwalNotificationEvent(NarwalEntity, EventEntity):
         self._seen_ids = {
             item.message_id for item in (state.notifications if state is not None else [])
         }
+        # A failed startup sync leaves no reliable baseline. Prime silently on
+        # the first successful refresh so historical messages are not replayed.
+        self._primed = coordinator.cloud_metadata_available
 
     def _handle_coordinator_update(self) -> None:
         """Emit each newly fetched cloud notification once per runtime."""
         state = self.coordinator.data
         if state is not None:
             current_ids = {item.message_id for item in state.notifications}
-            unseen = [item for item in state.notifications if item.message_id not in self._seen_ids]
-            for item in sorted(unseen, key=lambda value: value.created_at):
-                self._trigger_notification(item)
-                self._seen_ids.add(item.message_id)
-            self._seen_ids.intersection_update(current_ids)
+            if not self._primed:
+                if self.coordinator.cloud_metadata_available:
+                    self._seen_ids = current_ids
+                    self._primed = True
+            else:
+                unseen = [
+                    item for item in state.notifications if item.message_id not in self._seen_ids
+                ]
+                for item in sorted(unseen, key=lambda value: value.created_at):
+                    self._trigger_notification(item)
+                    self._seen_ids.add(item.message_id)
+                self._seen_ids.intersection_update(current_ids)
         super()._handle_coordinator_update()
 
     def _trigger_notification(self, item: NarwalNotification) -> None:

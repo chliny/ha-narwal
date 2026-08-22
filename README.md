@@ -52,6 +52,40 @@
 `hacs.json`，并且 `custom_components/narwal/manifest.json` 中包含版本号。
 操作入口可参考 [HACS 自定义仓库说明](https://www.hacs.xyz/docs/faq/custom_repositories/)。
 
+### 自动发送机器人通知
+
+集成不会自行调用 `notify.*` 服务，避免在用户没有配置通知目标时产生副作用。
+云端新消息会通过事件实体
+`event.narwal_<设备ID>_notification` 发出，推荐使用它触发 Home Assistant 通知：
+
+```yaml
+alias: 云鲸机器人通知
+triggers:
+  - trigger: state
+    entity_id: event.narwal_<设备ID>_notification
+actions:
+  - action: notify.mobile_app_手机
+    data:
+      title: "云鲸 {{ trigger.to_state.attributes.event_type }}"
+      message: >-
+        {{ trigger.to_state.attributes.title }}
+        {{ trigger.to_state.attributes.content }}
+```
+
+只提醒耗材消息时，可以增加条件：
+
+```yaml
+conditions:
+  - condition: template
+    value_template: >-
+      {{ trigger.to_state.attributes.event_type == 'consumable' }}
+```
+
+`sensor.narwal_<设备ID>_latest_notification` 适合在仪表盘显示最新消息，
+但不建议作为唯一的通知触发源：相同标题和内容的连续通知可能拥有不同消息 ID，
+传感器状态文本却可能相同。事件实体包含 `message_id`、标题、正文、分类和时间，
+并按消息 ID 在当前运行周期内去重。云端轮询间隔通常为 60 秒，通知可能有相应延迟。
+
 ### 手动安装
 
 将整个 `custom_components/narwal` 目录复制到 Home Assistant 配置目录：

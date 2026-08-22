@@ -142,6 +142,12 @@
           "on": "已回基站",
           "off": "离开基站"
         }
+      },
+      "consumable_reminder": {
+        "name": "耗材提醒",
+        "state_attributes": {
+          "items": {"name": "提醒项目"}
+        }
       }
     },
     "button": {
