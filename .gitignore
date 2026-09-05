@@ -1,5 +1,6 @@
 # Reverse-engineering artifacts and secrets
 analysis/
+.plan/
 .env
 .env.*
 
@@ -11,4 +12,3 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
-
