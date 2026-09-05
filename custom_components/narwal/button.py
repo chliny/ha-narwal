@@ -159,7 +159,7 @@ class NarwalStartCleanPlanButton(NarwalEntity, ButtonEntity):
                 elif isinstance(raw_plan_id, (str, bytes, bytearray)):
                     try:
                         plan_id = int(raw_plan_id)
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         plan_id = None
         if plan_id is None:
             raise HomeAssistantError("No saved Narwal cleaning plan is available")

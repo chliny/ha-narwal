@@ -179,7 +179,7 @@ class NarwalCloudApi:
             if err.status in (401, 403):
                 raise NarwalCloudAuthError("Narwal cloud rejected authentication") from None
             raise NarwalCloudError("Narwal cloud request failed") from None
-        except (ClientError, TimeoutError, ValueError):
+        except ClientError, TimeoutError, ValueError:
             # aiohttp transport exceptions may contain query parameters such as
             # device IDs. Suppress that context so Home Assistant does not
             # include those identifiers in a chained traceback.
@@ -330,19 +330,24 @@ class NarwalCloudApi:
             if not isinstance(value, dict):
                 continue
             type_id = _as_int(value.get("type"))
-            code = str(value.get("consumables_code") or "")
+            code = _as_text(value.get("consumables_code"))
             key = code or f"type_{type_id}"
+            reset_switch = value.get("reset_btn_switch")
             consumables.append(
                 ConsumableInfo(
                     key=key,
-                    name=str(value.get("name") or f"Consumable {type_id}"),
+                    name=_as_text(value.get("name")) or f"Consumable {type_id}",
                     type_id=type_id,
                     category=_as_int(value.get("item_type")),
                     total_duration=_as_int(value.get("total_duration")),
                     usage_duration=_as_int(value.get("usage_duration")),
-                    subtitle=str(value.get("subtitle") or ""),
+                    subtitle=_as_text(value.get("subtitle")),
                     code=code,
-                    reset_supported=bool(_as_int(value.get("reset_btn_switch"))),
+                    reset_supported=(
+                        isinstance(reset_switch, int)
+                        and not isinstance(reset_switch, bool)
+                        and reset_switch > 0
+                    ),
                 )
             )
         return consumables
@@ -376,17 +381,21 @@ class NarwalCloudApi:
         for value in values:
             if not isinstance(value, dict):
                 continue
-            message_id = str(value.get("msg_id") or value.get("id") or "")
+            message_id = value.get("msg_id") or value.get("id") or ""
+            # Keep integer notification IDs as stable identities, not display text.
+            if isinstance(message_id, bool) or not isinstance(message_id, (str, int)):
+                continue
+            message_id = str(message_id)
             if not message_id:
                 continue
             messages.append(
                 NarwalNotification(
                     message_id=message_id,
-                    title=str(value.get("msg_title") or ""),
-                    content=str(value.get("msg_content") or ""),
+                    title=_as_text(value.get("msg_title")),
+                    content=_as_text(value.get("msg_content")),
                     created_at=_as_int(value.get("created_time")),
                     is_read=_as_bool(value.get("is_read", False)),
-                    device_id=str(value.get("device_id") or device_id),
+                    device_id=_as_text(value.get("device_id")) or device_id,
                 )
             )
         return messages
@@ -634,10 +643,12 @@ class NarwalCloudApi:
 
 
 def _as_int(value: Any) -> int:
-    """Convert a loosely typed cloud field to an integer."""
+    """Parse read-only numbers, retaining numeric strings but rejecting bools."""
+    if isinstance(value, bool):
+        return 0
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError, OverflowError:
         return 0
 
 
@@ -662,7 +673,7 @@ def _as_optional_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -672,7 +683,7 @@ def _as_bool(value: Any) -> bool:
         return value
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes"}
-    return bool(value)
+    return isinstance(value, int) and value != 0
 
 
 def _task_record_values(result: Any) -> list[dict[str, Any]]:

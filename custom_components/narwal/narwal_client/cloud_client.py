@@ -15,6 +15,7 @@ import paho.mqtt.client as mqtt
 from aiohttp import ClientSession
 from paho.mqtt import MQTTException
 
+from . import const
 from .client import (
     NarwalAuthenticationError,
     NarwalClient,
@@ -27,7 +28,16 @@ from .cloud_api import (
     NarwalCloudAuthError,
     NarwalCloudError,
 )
-from .const import COMMAND_RESPONSE_TIMEOUT, TOPIC_CMD_ACTIVE_ROBOT
+from .const import (
+    COMMAND_RESPONSE_TIMEOUT,
+    TOPIC_CMD_ACTIVE_ROBOT,
+    TOPIC_CMD_GET_BATTERY_INFO,
+    TOPIC_CMD_GET_CLEAN_PROGRESS,
+    TOPIC_CMD_GET_CONSUMABLE_INFO,
+    TOPIC_CMD_GET_DEVICE_INFO,
+    TOPIC_CMD_GET_FEATURE_LIST,
+    CommandResult,
+)
 from .models import CommandResponse
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,6 +117,8 @@ def _read_varint(data: bytes, offset: int = 0) -> tuple[int, int]:
     while offset < len(data) and shift <= 63:
         byte = data[offset]
         offset += 1
+        if shift == 63 and byte > 1:
+            raise ValueError("protobuf varint exceeds 64 bits")
         value |= (byte & 0x7F) << shift
         if not byte & 0x80:
             return value, offset
@@ -132,6 +144,8 @@ def _protobuf_fields(data: bytes) -> dict[int, list[int | bytes]]:
     while offset < len(data):
         key, offset = _read_varint(data, offset)
         number, wire_type = key >> 3, key & 7
+        if not 1 <= number < (1 << 29):
+            raise ValueError("invalid protobuf field number")
         value: int | bytes
         if wire_type == 0:
             value, offset = _read_varint(data, offset)
@@ -143,9 +157,13 @@ def _protobuf_fields(data: bytes) -> dict[int, list[int | bytes]]:
             value = data[offset:end]
             offset = end
         elif wire_type == 1:
+            if offset + 8 > len(data):
+                raise ValueError("truncated protobuf fixed64")
             value = data[offset : offset + 8]
             offset += 8
         elif wire_type == 5:
+            if offset + 4 > len(data):
+                raise ValueError("truncated protobuf fixed32")
             value = data[offset : offset + 4]
             offset += 4
         else:
@@ -161,28 +179,36 @@ def _service_envelope(user_uuid: str, payload: bytes) -> bytes:
     return b"\x01" + _varint(len(header)) + header + payload
 
 
-def _decode_envelope(data: bytes) -> tuple[str, bytes]:
+def _decode_envelope(data: bytes) -> bytes:
+    """Unframe a service message, retaining support for raw protobuf bodies."""
     if not data or data[0] != 1:
-        return "", data
+        _protobuf_fields(data)
+        return data
     header_length, offset = _read_varint(data, 1)
-    offset += header_length
-    if offset > len(data):
+    end = offset + header_length
+    if end > len(data):
         raise ValueError("truncated Narwal envelope")
-    payload = data[offset:]
-    # Only general/topic multiplexes an inner URL. Direct service responses
-    # and broadcasts carry the endpoint protobuf immediately after the header.
-    try:
-        fields = _protobuf_fields(payload)
-        raw_url = fields.get(1, [b""])[0]
-        raw_payload = fields.get(2, [b""])[0]
-    except ValueError:
-        return "", payload
-    if isinstance(raw_url, bytes) and raw_url.startswith(b"/"):
-        return (
-            raw_url.decode(errors="replace"),
-            bytes(raw_payload) if isinstance(raw_payload, bytes) else b"",
-        )
-    return "", payload
+    _protobuf_fields(data[offset:end])
+    payload = data[end:]
+    _protobuf_fields(payload)
+    return payload
+
+
+def _decode_topic(payload: bytes) -> tuple[str, bytes]:
+    """Decode mqtt.msg.Topic only for the general/topic outer topic."""
+    fields = _protobuf_fields(payload)
+    urls = fields.get(1, [])
+    bodies = fields.get(2, [])
+    if (
+        len(urls) != 1
+        or not isinstance(urls[0], bytes)
+        or not urls[0].startswith(b"/")
+        or len(bodies) != 1
+        or not isinstance(bodies[0], bytes)
+    ):
+        raise ValueError("invalid Narwal multiplex topic")
+    _protobuf_fields(bodies[0])
+    return urls[0].decode("utf-8"), bodies[0]
 
 
 def _correlation_data(message_id: str) -> bytes:
@@ -274,6 +300,7 @@ class NarwalCloudClient(NarwalClient):
         self._disconnect_waiter = asyncio.Event()
         self._connect_error: Exception | None = None
         self._subscribe_mid: int | None = None
+        self._subscriptions: dict[int, asyncio.Future[None]] = {}
         self._response_topics: set[str] = set()
         self._activation_task: asyncio.Task[None] | None = None
         self._broadcast_tasks: set[asyncio.Task[None]] = set()
@@ -606,23 +633,33 @@ class NarwalCloudClient(NarwalClient):
     ) -> None:
         """Mark the transport ready only after all subscriptions are accepted."""
         loop = self._loop
-        if loop is None or client is not self._mqtt or mid != self._subscribe_mid:
+        if loop is None or client is not self._mqtt:
             return
         rejected = [int(code.value) for code in reason_codes if int(code.value) >= 128]
-        if rejected:
-            loop.call_soon_threadsafe(
-                self._fail_connect,
-                NarwalConnectionError(f"MQTT subscriptions rejected ({rejected[0]})"),
-                client,
-            )
-            return
-        loop.call_soon_threadsafe(self._mark_subscribed, client, mid)
+        error = (
+            NarwalConnectionError("MQTT subscriptions rejected or missing SUBACK reasons")
+            if rejected or not reason_codes
+            else None
+        )
+        loop.call_soon_threadsafe(self._mark_subscribed, client, mid, error)
 
-    def _mark_subscribed(self, source_client: mqtt.Client, mid: int) -> None:
+    def _mark_subscribed(
+        self, source_client: mqtt.Client, mid: int, error: Exception | None = None
+    ) -> None:
         """Mark only the current client's matching subscription as ready."""
-        if source_client is not self._mqtt or mid != self._subscribe_mid:
+        if source_client is not self._mqtt:
             return
-        self._mqtt_ready.set()
+        if mid == self._subscribe_mid:
+            self._subscribe_mid = None
+            if error is not None:
+                self._fail_connect(error, source_client)
+            else:
+                self._mqtt_ready.set()
+        elif (future := self._subscriptions.get(mid)) is not None and not future.done():
+            if error is not None:
+                future.set_exception(error)
+            else:
+                future.set_result(None)
 
     def _fail_connect(
         self,
@@ -632,6 +669,10 @@ class NarwalCloudClient(NarwalClient):
         if source_client is not None and source_client is not self._mqtt:
             return
         self._connect_error = error
+        for future in self._subscriptions.values():
+            if not future.done():
+                future.set_exception(error)
+        self._subscriptions.clear()
         for _response_topic, future in self._pending.values():
             if not future.done():
                 future.set_exception(error)
@@ -662,6 +703,10 @@ class NarwalCloudClient(NarwalClient):
             activation_task.cancel()
         self._disconnect_waiter.set()
         error = NarwalConnectionError("Narwal cloud MQTT connection closed")
+        for future in self._subscriptions.values():
+            if not future.done():
+                future.set_exception(error)
+        self._subscriptions.clear()
         for _response_topic, future in self._pending.values():
             if not future.done():
                 future.set_exception(error)
@@ -704,8 +749,15 @@ class NarwalCloudClient(NarwalClient):
             source_client is not None and source_client is not self._mqtt
         ):
             return
+
+        async def handle_current_broadcast() -> None:
+            if self._accept_mqtt_messages and (
+                source_client is None or source_client is self._mqtt
+            ):
+                await self._handle_cloud_broadcast(topic, raw)
+
         task = asyncio.create_task(
-            self._handle_cloud_broadcast(topic, raw),
+            handle_current_broadcast(),
             name="narwal-cloud-broadcast",
         )
         self._broadcast_tasks.add(task)
@@ -734,21 +786,56 @@ class NarwalCloudClient(NarwalClient):
             source_client is not None and source_client is not self._mqtt
         ):
             return
-        self._mark_robot_reachable()
         pending = self._pending.get(correlation)
         future = pending[1] if pending is not None and pending[0] == response_topic else None
-        # A non-empty correlation belongs to a specific requester. Never route
-        # another app's or a timed-out request's response by topic alone.
-        if future is None and not correlation:
-            topic_futures = [
-                pending_future
-                for pending_topic, pending_future in self._pending.values()
-                if pending_topic == response_topic
-            ]
-            if len(topic_futures) == 1:
-                future = topic_futures[0]
-        if future is not None and not future.done():
-            future.set_result(raw)
+        prefix = f"{self.topic_prefix}/{self.device_id}/"
+        if (
+            not correlation
+            or future is None
+            or future.done()
+            or not response_topic.startswith(prefix)
+        ):
+            return
+        short_topic = response_topic[len(prefix) :].removesuffix("/response")
+        try:
+            response = self._decode_response(short_topic, raw)
+        except NarwalCommandError as err:
+            future.set_exception(err)
+            return
+        # A valid failure result is still evidence that the robot responded.
+        if (
+            (
+                short_topic
+                in {value for name, value in vars(const).items() if name.startswith("TOPIC_CMD_")}
+                and type(response.data.get("1")) is int
+                and response.result_code in set(CommandResult)
+            )
+            or (short_topic == TOPIC_CMD_ACTIVE_ROBOT and bool(response.data.keys() & {"1", "2"}))
+            or (
+                short_topic == TOPIC_CMD_GET_BATTERY_INFO
+                and any(
+                    type(response.data.get(str(field))) is int for field in (1, 2, 4, 5, 6, 7, 8, 9)
+                )
+            )
+            or (
+                short_topic == TOPIC_CMD_GET_CONSUMABLE_INFO
+                and isinstance(response.data.get("1"), dict)
+            )
+            or (
+                short_topic == TOPIC_CMD_GET_DEVICE_INFO
+                and all(
+                    isinstance(response.data.get(field), bytes) and response.data[field]
+                    for field in ("1", "2")
+                )
+            )
+            or (
+                short_topic == TOPIC_CMD_GET_FEATURE_LIST
+                and all(type(value) is int for value in response.data.values())
+                and response.data.get("1", 0) in (0, 1)
+            )
+        ):
+            self._mark_robot_reachable()
+        future.set_result(raw)
 
     def _mark_robot_reachable(self) -> None:
         """Record a robot-originated message independently of broker state."""
@@ -759,20 +846,20 @@ class NarwalCloudClient(NarwalClient):
             self.on_state_update(self.state)
 
     async def _handle_cloud_broadcast(self, topic: str, raw: bytes) -> None:
-        was_reachable = self.robot_awake
+        prefix = f"{self.topic_prefix}/{self.device_id}/"
+        if not topic.startswith(prefix):
+            return
+        short_topic = topic[len(prefix) :]
         try:
-            inner_url, payload = _decode_envelope(raw)
+            payload = _decode_envelope(raw)
+            if short_topic == "general/topic":
+                inner_url, payload = _decode_topic(payload)
+                short_topic = inner_url.removeprefix("/")
         except ValueError:
             _LOGGER.debug("Discarding malformed Narwal cloud broadcast")
             return
-        prefix = f"{self.topic_prefix}/{self.device_id}/"
-        short_topic = topic.removeprefix(prefix)
-        if short_topic == "general/topic" and inner_url:
-            short_topic = inner_url.lstrip("/")
         try:
-            handled = await self._handle_broadcast(short_topic, payload)
-            if not handled and not was_reachable and self.on_state_update is not None:
-                self.on_state_update(self.state)
+            await self._handle_broadcast(short_topic, payload)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -800,7 +887,7 @@ class NarwalCloudClient(NarwalClient):
     def _active_renewal_delay(raw: bytes) -> float:
         """Return half the publication lease, matching the Android app."""
         try:
-            _inner_url, payload = _decode_envelope(raw)
+            payload = _decode_envelope(raw)
             fields = _protobuf_fields(payload)
             duration = fields.get(2, [_ACTIVE_PUBLISH_DEFAULT_DURATION_MS])[0]
             if not isinstance(duration, int) or duration <= 0:
@@ -834,8 +921,13 @@ class NarwalCloudClient(NarwalClient):
                 continue
             except NarwalConnectionError:
                 return
+            except NarwalCommandError:
+                backoff_index += 1
+                await asyncio.sleep(timeout)
+                continue
             if raw is None:
                 backoff_index += 1
+                await asyncio.sleep(timeout)
                 continue
             backoff_index = 0
             await asyncio.sleep(self._active_renewal_delay(raw))
@@ -854,13 +946,29 @@ class NarwalCloudClient(NarwalClient):
         request_topic = f"{self.topic_prefix}/{self.device_id}/{short_topic.lstrip('/')}"
         response_topic = f"{request_topic}/response"
         if response_topic not in self._response_topics:
-            result, _mid = client.subscribe(
+            # Concurrent requests own separate MIDs, even for the same topic:
+            # cancelling one request must not cancel another's SUBACK wait.
+            result, mid = client.subscribe(
                 response_topic,
                 options=mqtt.SubscribeOptions(qos=0),
             )
             if result != mqtt.MQTT_ERR_SUCCESS:
                 raise NarwalConnectionError(f"MQTT response subscription failed ({result})")
-            self._response_topics.add(response_topic)
+            subscription = asyncio.get_running_loop().create_future()
+            self._subscriptions[mid] = subscription
+            try:
+                await asyncio.wait_for(subscription, timeout=COMMAND_RESPONSE_TIMEOUT)
+                if client is not self._mqtt or not self.connected or not self._accept_mqtt_messages:
+                    raise NarwalConnectionError(
+                        "Narwal MQTT connection changed during subscription"
+                    )
+                self._response_topics.add(response_topic)
+            finally:
+                if self._subscriptions.get(mid) is subscription:
+                    self._subscriptions.pop(mid)
+                subscription.cancel()
+                if not subscription.cancelled():
+                    subscription.exception()
         message_id = str(uuid.uuid4())
         properties = mqtt.Properties(mqtt.PacketTypes.PUBLISH)
         properties.ResponseTopic = response_topic
@@ -869,21 +977,22 @@ class NarwalCloudClient(NarwalClient):
         if expect_response:
             future = asyncio.get_running_loop().create_future()
             self._pending[message_id] = (response_topic, future)
-        info = client.publish(
-            request_topic,
-            _service_envelope(account.uuid, payload),
-            qos=0,
-            properties=properties,
-        )
-        if info.rc != mqtt.MQTT_ERR_SUCCESS:
-            self._pending.pop(message_id, None)
-            raise NarwalConnectionError(f"MQTT publish failed ({info.rc})")
-        if future is None:
-            return None
         try:
-            return await future
+            info = client.publish(
+                request_topic,
+                _service_envelope(account.uuid, payload),
+                qos=0,
+                properties=properties,
+            )
+            if info.rc != mqtt.MQTT_ERR_SUCCESS:
+                raise NarwalConnectionError(f"MQTT publish failed ({info.rc})")
+            return await future if future is not None else None
         finally:
             self._pending.pop(message_id, None)
+            if future is not None:
+                future.cancel()
+                if not future.cancelled():
+                    future.exception()
 
     async def send_command(
         self,
@@ -908,19 +1017,43 @@ class NarwalCloudClient(NarwalClient):
                 ) from None
         if raw is None:
             raise NarwalCommandError(f"Empty response for command '{short_topic}'")
+        return self._decode_response(short_topic, raw)
+
+    def _decode_response(self, short_topic: str, raw: bytes) -> CommandResponse:
+        """Decode endpoint results without treating payload fields as result codes."""
         try:
-            _inner_url, response_payload = _decode_envelope(raw)
+            response_payload = _decode_envelope(raw)
             decoded = self._decode_protobuf(response_payload)
         except Exception as err:
             raise NarwalCommandError(f"Malformed response for command '{short_topic}'") from err
-        if not isinstance(decoded, dict) or not decoded:
+        short_topic = short_topic.lstrip("/")
+        if not isinstance(decoded, dict) or (not decoded and short_topic != TOPIC_CMD_ACTIVE_ROBOT):
             raise NarwalCommandError(f"Empty response for command '{short_topic}'")
+        # ActiveRobotPublish.Response contains topicsDuration=1 (message) and
+        # defaultDuration=2 (uint), not ServiceResult. An empty body is defaults.
+        if short_topic == TOPIC_CMD_ACTIVE_ROBOT and (
+            ("1" in decoded and not isinstance(decoded["1"], dict))
+            or ("2" in decoded and (type(decoded["2"]) is not int or decoded["2"] < 0))
+            or (
+                isinstance(decoded.get("1"), dict)
+                and any(type(value) is not int or value < 0 for value in decoded["1"].values())
+            )
+        ):
+            raise NarwalCommandError(f"Malformed response for command '{short_topic}'")
 
         raw_field1 = decoded.get("1")
-        result_code = 0
-        if raw_field1 is not None and not isinstance(raw_field1, (bool, dict, list, tuple)):
-            with contextlib.suppress(ValueError, TypeError):
-                result_code = int(raw_field1)
+        result_code: int | None = 0
+        if short_topic in {
+            TOPIC_CMD_ACTIVE_ROBOT,
+            TOPIC_CMD_GET_BATTERY_INFO,
+            TOPIC_CMD_GET_CONSUMABLE_INFO,
+            TOPIC_CMD_GET_CLEAN_PROGRESS,
+            TOPIC_CMD_GET_DEVICE_INFO,
+            TOPIC_CMD_GET_FEATURE_LIST,
+        }:
+            result_code = None
+        elif type(raw_field1) is int:
+            result_code = raw_field1
         return CommandResponse(
             result_code=result_code,
             data=decoded,
@@ -957,6 +1090,7 @@ class NarwalCloudClient(NarwalClient):
         client = self._mqtt
         if client is None or self._mqtt_ready.is_set():
             return
+        self._mark_disconnected(client)
         self._accept_mqtt_messages = False
         self._loop = None
         self._mqtt = None

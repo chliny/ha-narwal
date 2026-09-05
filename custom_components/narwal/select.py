@@ -238,6 +238,10 @@ def _named_options(values: list[dict[str, object]], id_key: str = "id") -> dict[
             continue
         name = str(value.get("name") or item_id)
         label = name if name not in result else f"{name} ({item_id})"
+        suffix = 2
+        while label in result:
+            label = f"{name} ({item_id}) ({suffix})"
+            suffix += 1
         result[label] = item_id
     return result
 
@@ -254,7 +258,7 @@ def _optional_int(value: object) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -371,7 +375,7 @@ class NarwalMapSelect(NarwalEntity, SelectEntity):
         try:
             await self.coordinator.client.get_map()
             await self.coordinator.client.get_all_maps()
-        except (NarwalCommandError, NarwalConnectionError):
+        except NarwalCommandError, NarwalConnectionError:
             _LOGGER.debug(
                 "Map switched to %d; refreshed map data will be retried",
                 map_id,
@@ -400,6 +404,10 @@ class NarwalVoicePackSelect(NarwalEntity, SelectEntity):
                 continue
             name = str(value.get("name") or resource_id)
             label = name if name not in result else f"{name} ({resource_id})"
+            suffix = 2
+            while label in result:
+                label = f"{name} ({resource_id}) ({suffix})"
+                suffix += 1
             result[label] = {key: str(item or "") for key, item in value.items()}
         return result
 

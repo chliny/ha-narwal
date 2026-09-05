@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Callable
 from typing import Any
@@ -106,13 +107,44 @@ class NarwalClient:
 
     async def _handle_broadcast(self, short_topic: str, payload: bytes) -> bool:
         """Decode a cloud broadcast and return whether it changed known state."""
-        self._last_broadcast_time = time.monotonic()
-        self._robot_awake = True
         try:
             decoded = self._decode_protobuf(payload)
         except Exception:
             _LOGGER.debug("Failed to decode protobuf for topic %s", short_topic)
             return False
+
+        if not isinstance(decoded, dict) or not decoded:
+            return False
+        known_fields = {
+            "status/working_status": {"1": (int, float), "2": (int, float), "3": int, "4": int},
+            "status/robot_base_status": {
+                "2": (int, float),
+                "3": (dict, list),
+                "11": int,
+                "13": (bytes, str),
+                "36": int,
+                "38": (int, float),
+                "46": (dict, list),
+                "47": int,
+            },
+            "upgrade/upgrade_status": {"4": int, "7": (bytes, str), "8": (bytes, str)},
+            "status/download_status": {"1": int},
+            "map/display_map": {"1": dict, "5": dict},
+            "status/time_line_status": {"1": (dict, list)},
+        }.get(short_topic, {})
+        if not decoded.keys() & known_fields.keys():
+            return False
+        for field, expected in known_fields.items():
+            if field not in decoded:
+                continue
+            value = decoded[field]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, expected)
+                or (isinstance(value, float) and not math.isfinite(value))
+                or (isinstance(value, list) and not all(isinstance(item, dict) for item in value))
+            ):
+                return False
 
         try:
             handled = True
@@ -132,8 +164,11 @@ class NarwalClient:
             else:
                 handled = False
 
-            if handled and self.on_state_update is not None:
-                self.on_state_update(self.state)
+            if handled:
+                self._last_broadcast_time = time.monotonic()
+                self._robot_awake = True
+                if self.on_state_update is not None:
+                    self.on_state_update(self.state)
             return handled
         except Exception:
             _LOGGER.debug(
@@ -602,7 +637,11 @@ class NarwalClient:
         details = {
             name: self._plain_value(response.data[field])
             for field, name in names.items()
-            if field in response.data
+            if (
+                isinstance(response.data.get(field), (bytes, str))
+                if field == "3"
+                else type(response.data.get(field)) is int
+            )
         }
         # BatteryInfo.Response has no ServiceResult field; field 1 is capacity.
         if details:
@@ -623,7 +662,15 @@ class NarwalClient:
         """Read robot-side consumable maintenance/replacement status."""
         response = await self.send_command(TOPIC_CMD_GET_CONSUMABLE_INFO)
         payload = response.data.get("1")
-        if isinstance(payload, dict):
+        if isinstance(payload, dict) and all(
+            type(item) is int
+            for field in ("1", "2")
+            for item in (
+                payload.get(field, [])
+                if isinstance(payload.get(field, []), list)
+                else [payload[field]]
+            )
+        ):
             self.state.consumable_maintain_items = self._int_values(payload.get("1"))
             self.state.consumable_replace_items = self._int_values(payload.get("2"))
             self.state.mqtt_consumables_supported = True
@@ -686,16 +733,17 @@ class NarwalClient:
         """Request current cleaning timeline data."""
         response = await self.send_command(TOPIC_CMD_GET_CLEAN_TIMELINE)
         timeline = response.data.get("2")
-        if isinstance(timeline, dict):
+        if response.success and isinstance(timeline, dict):
             self._update_clean_timeline(timeline)
         return response
 
     async def get_clean_progress(self) -> CommandResponse:
         """Request the current clean-progress detail payload."""
         response = await self.send_command(TOPIC_CMD_GET_CLEAN_PROGRESS)
-        if not response.general_failed and response.data:
+        # The response schema is unverified. Retain diagnostics, not a capability
+        # or a guessed ServiceResult/cleaning-progress interpretation.
+        if response.data:
             self.state.clean_progress = self._plain_dict(response.data)
-            self.state.clean_progress_supported = True
         return response
 
     def _update_clean_timeline(self, decoded: dict[str, Any]) -> None:
@@ -732,7 +780,7 @@ class NarwalClient:
     def _as_int(value: Any) -> int | None:
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
     @classmethod
@@ -747,7 +795,7 @@ class NarwalClient:
                 TOPIC_CMD_TAKE_PICTURE,
                 timeout=15.0,
             )
-        except (NarwalCommandError, NarwalConnectionError):
+        except NarwalCommandError, NarwalConnectionError:
             return None
         return response.data.get("2") if response.result_code == CommandResult.SUCCESS else None
 
@@ -758,5 +806,5 @@ class NarwalClient:
                 TOPIC_CMD_SET_LED,
                 payload=b"\x08\x01" if on else b"\x08\x00",
             )
-        except (NarwalCommandError, NarwalConnectionError):
+        except NarwalCommandError, NarwalConnectionError:
             _LOGGER.debug("Unable to set Narwal camera LED")

@@ -1,0 +1,7 @@
+-r requirements.txt
+black>=24.0
+ruff>=0.3
+mypy>=1.8
+Pillow>=10.0
+pytest>=8.0
+homeassistant==2026.8.1

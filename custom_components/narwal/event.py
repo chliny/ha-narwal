@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.components.event import EventEntity
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
@@ -40,6 +40,7 @@ class NarwalNotificationEvent(NarwalEntity, EventEntity):
         # the first successful refresh so historical messages are not replayed.
         self._primed = coordinator.cloud_metadata_available
 
+    @callback
     def _handle_coordinator_update(self) -> None:
         """Emit each newly fetched cloud notification once per runtime."""
         state = self.coordinator.data

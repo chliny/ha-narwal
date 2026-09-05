@@ -23,14 +23,9 @@ from .narwal_client import CommandResponse, CommandResult, WorkingStatus
 
 _LOGGER = logging.getLogger(__name__)
 
-# HA added the clean-area feature together with Segment in 2026.3. getattr
-# keeps imports working on the integration's HA 2025.1 minimum version.
-_Segment = getattr(vacuum_component, "Segment", None)
-_CLEAN_AREA_FEATURE: VacuumEntityFeature = getattr(
-    VacuumEntityFeature,
-    "CLEAN_AREA",
-    VacuumEntityFeature(0),
-)
+# Segment and clean-area were added in HA 2026.3, which is the minimum.
+_Segment = vacuum_component.Segment
+_CLEAN_AREA_FEATURE: VacuumEntityFeature = VacuumEntityFeature.CLEAN_AREA
 
 WORKING_STATUS_TO_ACTIVITY: dict[WorkingStatus, VacuumActivity] = {
     WorkingStatus.IDLE: VacuumActivity.IDLE,
@@ -226,10 +221,8 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         Falls back to HA-cached last_seen_segments when map data is not yet
         loaded (robot asleep at startup), so clean_area works without waking
         the robot first.
-        Returns [] when HA < 2026.3 (Segment class unavailable).
+        Returns [] when map data is not yet loaded.
         """
-        if _Segment is None:
-            return []
         state = self.coordinator.data
         if state is None or state.map_data is None:
             # Robot sleeping — return cached segments so clean_area still works
@@ -290,7 +283,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         If rooms have changed (added, removed, or renamed), creates a repair
         issue so the user can update their segment-to-area mappings.
         """
-        if _Segment is None or self.registry_entry is None:
+        if self.registry_entry is None:
             return
         last = getattr(self, "last_seen_segments", None)
         if last is None:

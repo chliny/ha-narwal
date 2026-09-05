@@ -258,7 +258,7 @@ class NarwalConfigSwitch(NarwalEntity, SwitchEntity):
             return None
         try:
             return bool(int(raw))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
     async def _async_set(self, enabled: bool) -> None:

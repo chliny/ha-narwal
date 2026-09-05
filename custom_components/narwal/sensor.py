@@ -335,7 +335,7 @@ def _task_record_datetime(record: dict[str, object], key: str) -> datetime | Non
         return None
     try:
         return datetime.fromtimestamp(timestamp, UTC)
-    except (OSError, OverflowError, ValueError):
+    except OSError, OverflowError, ValueError:
         return None
 
 
@@ -390,7 +390,7 @@ def _task_record_number(record: dict[str, object], key: str) -> float | None:
         return None
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return number if isfinite(number) else None
 

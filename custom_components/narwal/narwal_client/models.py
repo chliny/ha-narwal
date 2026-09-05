@@ -20,7 +20,7 @@ def _int_or_default(value: Any, default: int = 0) -> int:
         return default
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -125,8 +125,8 @@ class ObstacleInfo:
 
     id: int = 0
     type_id: int = 0  # Protocol furniture enum
-    center_x: float = 0.0  # World X coordinate
-    center_y: float = 0.0  # World Y coordinate
+    center_x: float = 0.0  # Raw native-map X coordinate
+    center_y: float = 0.0  # Raw native-map Y coordinate
     width: float = 0.0  # Object width in grid units
     height: float = 0.0  # Object height in grid units
     angle: float = 0.0  # Rotation in degrees
@@ -180,7 +180,7 @@ class ObstacleInfo:
         return self.TYPE_NAMES.get(self.type_id, f"Object {self.type_id}")
 
     def to_grid_coords(self, origin_x: int, origin_y: int) -> tuple[float, float]:
-        """Convert world coordinates to grid pixel coordinates.
+        """Convert native-map coordinates to the renderer's grid frame.
 
         Same transform as dock/robot: pixel = raw - origin.
         """
@@ -261,7 +261,7 @@ def _parse_obstacles(field32: dict) -> list[ObstacleInfo]:
                     angle=angle or 0.0,
                 )
             )
-        except (ValueError, TypeError, AttributeError):
+        except ValueError, TypeError, AttributeError:
             continue
     return obstacles
 
@@ -279,8 +279,8 @@ class MapData:
     created_at: int = 0
     dock_x: float | None = None  # dock position in grid coordinates
     dock_y: float | None = None
-    origin_x: int = 0  # x pixel offset from field 2.6.3
-    origin_y: int = 0  # y pixel offset from field 2.6.1
+    origin_x: int = 0  # Legacy renderer X offset from border.left (field 2.6.3)
+    origin_y: int = 0  # Legacy renderer Y offset from border.bottom (field 2.6.1)
     obstacles: list[ObstacleInfo] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -330,9 +330,10 @@ class MapData:
 
         resolution = _int_or_default(payload.get("3"))
 
-        # Extract origin offsets from field 6 (coordinate transform).
-        # Field 6: {1: origin_y, 2: ?, 3: origin_x, 4: resolution}
-        # Positions are in grid-offset units: pixel = raw - origin
+        # Native StaticMapPayload field 6 is Border (bottom, top, left, right),
+        # not the PoseData origin in field 7. Retain the existing renderer
+        # offsets until native captures establish the full frame transform;
+        # the app's separate BX3 conversion is not evidence for rescaling here.
         origin_x = 0
         origin_y = 0
         field6 = payload.get("6")
@@ -341,10 +342,8 @@ class MapData:
             origin_y = _int_or_default(field6.get("1"))
 
         # Parse dock position from field 8 (dock/charging station location).
-        # Field 8 structure: {1: {1: x_dm, 2: y_dm}, 2: heading_rad}
-        # Coordinates are in decimeters (same as display_map field 5).
-        # Matches display_map field 5 (confirmed via live capture cross-reference).
-        # Pixel transform: px = (x_dm * 10) / cm_per_pixel - origin
+        # Field 8 structure: {1: {1: x, 2: y}, 2: heading_rad}.
+        # Keep the same raw-coordinate offset as display_map and furniture.
         dock_x = None
         dock_y = None
         field8 = payload.get("8")
@@ -352,12 +351,12 @@ class MapData:
             pos = field8.get("1")
             if isinstance(pos, dict) and "1" in pos and "2" in pos:
                 try:
-                    x_dm = _to_float32(pos["1"])
-                    y_dm = _to_float32(pos["2"])
-                    if x_dm is not None and y_dm is not None:
-                        dock_x = x_dm - origin_x
-                        dock_y = y_dm - origin_y
-                except (struct.error, OverflowError, ValueError, TypeError):
+                    x = _to_float32(pos["1"])
+                    y = _to_float32(pos["2"])
+                    if x is not None and y is not None:
+                        dock_x = x - origin_x
+                        dock_y = y - origin_y
+                except struct.error, OverflowError, ValueError, TypeError:
                     pass
 
         # Parse obstacle/furniture annotations from field 32 (MapFurnitureInfoList)
@@ -387,12 +386,12 @@ class MapData:
 class MapDisplayData:
     """Real-time robot position from map/display_map broadcasts.
 
-    Sent every ~1.5s during active cleaning. Contains robot position in cm,
+    Sent every ~1.5s during active cleaning. Contains raw robot position,
     heading in radians, and a small cleaned-area grid overlay (NOT the full
     house map — that comes from get_map).
 
     Validated field layout (live capture 2026-02-28, 13 broadcasts):
-      field 1.1: {1: x_cm, 2: y_cm} — robot position as float32 centimeters
+      field 1.1: {1: x, 2: y} — robot position as float32
       field 1.2: heading as float32 radians
       field 5: dock/reference position (constant, same format)
       field 7: cleaned-area grid {1: width, 2: height, 3: compressed_bytes}
@@ -400,8 +399,8 @@ class MapDisplayData:
       field 12: active room list
     """
 
-    robot_x: float = 0.0  # decimeters, world coordinates
-    robot_y: float = 0.0  # decimeters, world coordinates
+    robot_x: float = 0.0  # Raw native-map coordinates; physical units unconfirmed
+    robot_y: float = 0.0
     robot_heading: float = 0.0  # degrees (converted from radians for renderer)
     timestamp: int = 0  # milliseconds since epoch (field 10)
     # Dock/reference position from field 5 (same coordinate system as robot)
@@ -414,14 +413,15 @@ class MapDisplayData:
         origin_x: int,
         origin_y: int,
     ) -> tuple[float, float] | None:
-        """Convert world-coordinate position (dm) to grid pixel coordinates.
+        """Convert native-map position to the renderer's grid frame.
 
-        display_map positions are in decimeters (validated via live capture).
-        Same coordinate system as get_map field 8 (dock position).
-          pixel = (x_dm * 10) / cm_per_pixel - origin_offset
+        Preserve pixel = raw - offset, shared with dock and furniture.
+        Native app positions may already be grid-based; BX3's separate
+        physical-coordinate conversion must not be applied without native
+        evidence. Border offsets are not the protocol's field 7 origin.
 
         Args:
-            resolution: Map resolution in mm/pixel (e.g. 60).
+            resolution: Positive map resolution; a validity gate, not a scale.
             origin_x: X pixel offset (MapData.origin_x, from field 2.6.3).
             origin_y: Y pixel offset (MapData.origin_y, from field 2.6.1).
 
@@ -432,7 +432,6 @@ class MapDisplayData:
             return None
         if resolution <= 0:
             return None
-        # Positions are in grid-offset units: pixel = raw - origin
         px = self.robot_x - origin_x
         py = self.robot_y - origin_y
         return (px, py)
@@ -444,7 +443,7 @@ class MapDisplayData:
 
         result = cls()
 
-        # Robot position — field 1.1 = {1: x_cm, 2: y_cm}, field 1.2 = heading_rad
+        # Robot position — field 1.1 = {1: x, 2: y}, field 1.2 = heading_rad
         field1 = decoded.get("1", {})
         if isinstance(field1, dict):
             pos = field1.get("1", {})
@@ -495,7 +494,7 @@ class Position:
 class CommandResponse:
     """Response from a command sent to the robot."""
 
-    result_code: int = 0
+    result_code: int | None = None
     data: dict[str, Any] = field(default_factory=dict)
     raw_payload: bytes = b""
 
@@ -530,7 +529,7 @@ class ConsumableInfo:
 
     @property
     def remaining_percentage(self) -> int | None:
-        """Return the app-compatible remaining lifetime percentage."""
+        """Return remaining lifetime normalized to Home Assistant's 0-100 range."""
         if self.total_duration <= 0:
             return None
         remaining = (self.total_duration - self.usage_duration) / self.total_duration
@@ -671,7 +670,7 @@ class NarwalState:
     dock_presence: int = 0
 
     # StationContactType from top-level field 11. Live captures show 1 when
-    # undocked and values >= 2 while docked, so it is a usable dock signal.
+    # undocked; only known contact values 2 and 3 are docking evidence.
     # Validated via dock_research.py guided test (5 captures):
     #   2 = on dock (all 3 on-dock captures)
     #   1 = off dock (both off-dock captures)
@@ -712,7 +711,7 @@ class NarwalState:
             if self.idle_status in (2, 3, 4, 5, 7):
                 return False
         # For idle, unknown, or unmapped states, check top-level dock signals.
-        return self.station_contact_type >= 2
+        return self.station_contact_type in {2, 3}
 
     @property
     def is_returning(self) -> bool:
@@ -743,12 +742,17 @@ class NarwalState:
         exposes field 2 as the raw fixed64 bit pattern rather than a float.
         """
         self.raw_working_status = decoded
-        if "3" in decoded:
-            with contextlib.suppress(ValueError, TypeError):
-                self.cleaning_time = int(decoded["3"])
+        time = decoded.get("3")
+        if not isinstance(time, bool) and not (
+            isinstance(time, float) and (not math.isfinite(time) or time < 0)
+        ):
+            with contextlib.suppress(ValueError, TypeError, OverflowError):
+                seconds = int(time)
+                if seconds >= 0:
+                    self.cleaning_time = seconds
         if "2" in decoded:
             area = _to_float64(decoded["2"])
-            if area is not None:
+            if area is not None and area >= 0:
                 self.cleaning_area = area
 
     def update_from_base_status(self, decoded: dict[str, Any]) -> None:
@@ -786,7 +790,7 @@ class NarwalState:
         self.station_contact_type = 0
         self.charging_status = 0
 
-        # Field 11 = StationContactType (2+=docked, 1=undocked in captures)
+        # Field 11 = StationContactType (2/3=docked, 1=undocked).
         if "11" in decoded:
             self.station_contact_type = _int_or_default(decoded["11"])
         # Field 47 = ChargingStatus enum; retained for diagnostics only.
@@ -806,7 +810,7 @@ class NarwalState:
                     if not 0 <= raw_status <= 28:
                         raise ValueError
                     self.working_status = WorkingStatus(raw_status)
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     raw_val = field3["1"]
                     _LOGGER.warning(
                         "Unknown RobotTaskStatus TaskType value: %s; treating it as UNSPECIFIED",
@@ -841,7 +845,7 @@ class NarwalState:
                 self.task_sub_status = (
                     int(field3.get(str(task_field), 0)) if task_field is not None else 0
                 )
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 self.task_sub_status = 0
             if self.working_status == WorkingStatus.IDLE:
                 self.idle_status = self.task_sub_status

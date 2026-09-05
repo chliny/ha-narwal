@@ -58,7 +58,7 @@ class NarwalVolumeNumber(NarwalEntity, NumberEntity):
             return None
         try:
             value = float(raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
         return value if math.isfinite(value) and 0 <= value <= 100 else None
 

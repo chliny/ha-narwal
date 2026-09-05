@@ -40,6 +40,9 @@
 
 ## 安装
 
+最低要求为 **Home Assistant 2026.3.0**，与 `hacs.json` 一致。
+该版本起原生支持房间分区清扫（`Segment` / clean-area API）。
+
 ### HACS（推荐）
 
 1. 打开 **HACS → 集成**。
@@ -136,6 +139,31 @@ logger:
 提交问题时可以附上与 `custom_components.narwal` 有关的日志，但请先删除
 手机号、密码、访问令牌、设备 ID、序列号、IP 地址和 MQTT 消息内容等敏感
 信息。
+
+## 开发版本验证
+
+当前开发依赖固定为 HA 2026.8.1，最低支持 HA 2026.3.0。两者均要求 Python >=3.14.2，
+`pyproject.toml` 的项目安装要求则为 Python >=3.14.7。HACS 安装复制集成目录，
+不执行项目打包，因此项目的 Python 要求不能替代集成运行时兼容性验证。
+
+Ruff 和 Black 的目标版本固定为 Python 3.12，避免格式化工具生成当前代码库未采用的
+异常语法；最低 HA 运行环境使用 Python 3.14.2 及以上。
+
+CI 的最低/当前 HA 测试矩阵分别使用 HA 2026.3.0 和 HA 2026.8.1（均使用 Python 3.14）。
+在独立环境中从仓库根目录安装依赖：
+
+```sh
+python -m pip install -r requirements.txt 'pytest>=8.0' "homeassistant==${HA_VERSION}"
+python -m pytest -q
+```
+
+`HA_VERSION` 设置为对应矩阵版本。不要使用 `pip install .`、`pip install -e '.[dev]'`
+或 `uv sync` 验证 Python 3.12，因为项目打包要求会先拒绝该 Python 版本；
+也不要在最低版本任务中使用固定安装 HA 2026.8.1 的 `requirements-dev.txt`。
+
+本地全量回归结果：HA 2026.3.0 和 HA 2026.8.1（Python 3.14.7）均为 **408 passed**，
+集成目录也通过语法编译检查。CI 使用相同的全量测试命令。
+实体单元测试会在缺少可选摄像头依赖时使用替身，不能替代完整 HA 启动或真机验证。
 
 ## 来源说明
 
