@@ -12,3 +12,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
+
+tests/
+scripts/test_cloud.py
+docs/
