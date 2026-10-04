@@ -390,7 +390,7 @@ def _task_record_number(record: dict[str, object], key: str) -> float | None:
         return None
     try:
         number = float(value)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return None
     return number if isfinite(number) else None
 
