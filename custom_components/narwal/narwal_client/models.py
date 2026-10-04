@@ -742,12 +742,17 @@ class NarwalState:
         exposes field 2 as the raw fixed64 bit pattern rather than a float.
         """
         self.raw_working_status = decoded
-        time = decoded.get("3")
-        if not isinstance(time, bool) and not (
-            isinstance(time, float) and (not math.isfinite(time) or time < 0)
+        time_consuming = decoded.get("3")
+        if (
+            time_consuming is not None
+            and not isinstance(time_consuming, bool)
+            and not (
+                isinstance(time_consuming, float)
+                and (not math.isfinite(time_consuming) or time_consuming < 0)
+            )
         ):
             with contextlib.suppress(ValueError, TypeError, OverflowError):
-                seconds = int(time)
+                seconds = int(time_consuming)
                 if seconds >= 0:
                     self.cleaning_time = seconds
         if "2" in decoded:

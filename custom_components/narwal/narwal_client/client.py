@@ -118,7 +118,7 @@ class NarwalClient:
 
         if not isinstance(decoded, dict) or not decoded:
             return False
-        known_fields = {
+        schemas: dict[str, dict[str, type | tuple[type, ...]]] = {
             "status/working_status": {"1": (int, float), "2": (int, float), "3": int, "4": int},
             "status/robot_base_status": {
                 "2": (int, float),
@@ -134,7 +134,8 @@ class NarwalClient:
             "status/download_status": {"1": int},
             "map/display_map": {"1": dict, "5": dict},
             "status/time_line_status": {"1": (dict, list)},
-        }.get(short_topic, {})
+        }
+        known_fields = schemas.get(short_topic, {})
         if not decoded.keys() & known_fields.keys():
             return False
         for field, expected in known_fields.items():
