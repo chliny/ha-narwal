@@ -76,6 +76,9 @@ class NarwalCommandError(Exception):
 class NarwalClient:
     """Transport base containing Narwal cloud commands and state parsing."""
 
+    # Legacy whole-map CleanTask accepted by older robot firmware. Keep this
+    # as a narrow fallback when the newer inferred schema is rejected.
+    _LEGACY_WHOLE_MAP_CLEAN_PAYLOAD = bytes.fromhex("0a0e12002a0a0a060803100218012a00")
     _ZONE_TYPE_ROOM = 1
     _ZONE_TYPE_WHOLE_MAP = 3
 
@@ -233,11 +236,22 @@ class NarwalClient:
         return await self.send_command(TOPIC_CMD_YELL)
 
     async def start(self, **kwargs: Any) -> CommandResponse:
-        """Start unrestricted whole-map cleaning."""
+        """Start unrestricted whole-map cleaning with a firmware fallback."""
         del kwargs
-        return await self.send_command(
+        response = await self.send_command(
             TOPIC_CMD_START_CLEAN,
             payload=self._build_clean_payload_v2(),
+            timeout=10.0,
+        )
+        if not response.general_failed:
+            return response
+
+        _LOGGER.info(
+            "Full CleanTask was rejected; retrying with the legacy whole-map schema"
+        )
+        return await self.send_command(
+            TOPIC_CMD_START_CLEAN,
+            payload=self._LEGACY_WHOLE_MAP_CLEAN_PAYLOAD,
             timeout=10.0,
         )
 
