@@ -495,6 +495,8 @@ class NarwalCloudClient(NarwalClient):
             ),
             return_exceptions=True,
         )
+        if any(isinstance(result, NarwalCloudAuthError) for result in results):
+            raise NarwalAuthenticationError("Narwal cloud credentials were rejected")
         fetched = {
             record_id: detail
             for record_id, detail in zip(missing_ids, results, strict=False)
@@ -673,9 +675,9 @@ class NarwalCloudClient(NarwalClient):
             if not future.done():
                 future.set_exception(error)
         self._subscriptions.clear()
-        for _response_topic, future in self._pending.values():
-            if not future.done():
-                future.set_exception(error)
+        for _response_topic, response_future in self._pending.values():
+            if not response_future.done():
+                response_future.set_exception(error)
         self._mqtt_ready.set()
 
     def _on_mqtt_disconnect(
@@ -707,9 +709,9 @@ class NarwalCloudClient(NarwalClient):
             if not future.done():
                 future.set_exception(error)
         self._subscriptions.clear()
-        for _response_topic, future in self._pending.values():
-            if not future.done():
-                future.set_exception(error)
+        for _response_topic, response_future in self._pending.values():
+            if not response_future.done():
+                response_future.set_exception(error)
 
     def _on_mqtt_message(
         self,
@@ -952,7 +954,7 @@ class NarwalCloudClient(NarwalClient):
                 response_topic,
                 options=mqtt.SubscribeOptions(qos=0),
             )
-            if result != mqtt.MQTT_ERR_SUCCESS:
+            if result != mqtt.MQTT_ERR_SUCCESS or mid is None:
                 raise NarwalConnectionError(f"MQTT response subscription failed ({result})")
             subscription = asyncio.get_running_loop().create_future()
             self._subscriptions[mid] = subscription
