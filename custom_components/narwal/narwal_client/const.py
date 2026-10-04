@@ -31,7 +31,7 @@ TOPIC_CMD_DUST_GATHERING = "supply/dust_gathering"
 TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME = "supply/get_dry_mop_remain_time"
 
 # Cleaning (Pita protocol — correct for AX12)
-TOPIC_CMD_START_CLEAN = "clean/plan/start"  # whole-house clean (empty payload)
+TOPIC_CMD_START_CLEAN = "clean/plan/start"  # protobuf CleanTask payload
 TOPIC_CMD_EASY_CLEAN = "clean/easy_clean/start"
 TOPIC_CMD_SET_FAN_LEVEL = "clean/set_fan_level"
 TOPIC_CMD_SET_MOP_HUMIDITY = "clean/set_mop_humidity"

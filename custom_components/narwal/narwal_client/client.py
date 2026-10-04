@@ -244,19 +244,32 @@ class NarwalClient:
     def _build_clean_payload_v2(
         self,
         room_ids: list[int] | None = None,
-        suction: int = 3,
-        mop_humidity: int = 2,
-        passes: int = 1,
+        suction: int | None = None,
+        mop_humidity: int | None = None,
         clean_mode: int = 3,
     ) -> bytes:
         """Build the current whole-map or room cleaning payload."""
         import blackboxprotobuf
 
+        if suction is None:
+            reported_fan = self.state.raw_base_status.get("26")
+            # App CleanParam defines six FanLevel values, beyond our four UI choices.
+            suction = reported_fan if type(reported_fan) is int and 0 <= reported_fan <= 5 else 3
+        if mop_humidity is None:
+            reported_humidity = self.state.raw_base_status.get("29")
+            mop_humidity = (
+                reported_humidity
+                if type(reported_humidity) is int and 0 <= reported_humidity <= 3
+                else 2
+            )
+
+        # CleanParam protobuf: 1=mode, 2=fanLevel, 4=mopHumidity.
+        # Field 3 is mopStrengthLevel and field 7 is sweepMopSyncTime,
+        # not a generic cleaning-pass count or mop humidity.
         clean_params = {
-            "1": suction,
-            "2": clean_mode,
-            "3": passes,
-            "7": mop_humidity,
+            "1": clean_mode,
+            "2": suction,
+            "4": mop_humidity,
         }
         if room_ids:
             clean_items = [
@@ -292,16 +305,18 @@ class NarwalClient:
                     "message_typedef": {
                         "1": {"type": "int"},
                         "2": {"type": "int"},
-                        "3": {"type": "int"},
-                        "7": {"type": "int"},
+                        "4": {"type": "int"},
                     },
                 },
                 "3": {"type": "int"},
             },
         }
+        map_id = self.state.current_map_id
+        if type(map_id) is not int or map_id <= 0:
+            map_id = 1
         message: dict[str | int, Any] = {
             "1": {
-                "1": 1,
+                "1": map_id,
                 "2": clean_items if len(clean_items) > 1 else clean_items[0],
                 "3": {},
                 "5": 6,
