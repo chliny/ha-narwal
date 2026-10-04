@@ -250,7 +250,7 @@ class NarwalCloudApi:
     async def devices(self) -> list[CloudDevice]:
         """Return robots bound to the authenticated account."""
         if self.account is None:
-            await self.login()
+            await self._ensure_login()
         result = await self._request(
             "GET",
             "/user-device-platform-server/device-info/getDeviceInfoList",
@@ -276,7 +276,7 @@ class NarwalCloudApi:
     async def broker(self) -> str:
         """Return the MQTT-over-TLS broker hostname."""
         if self.account is None:
-            await self.login()
+            await self._ensure_login()
         result = await self._request(
             "GET",
             "/iot-broker-discover/app/v1/broker/discover",
@@ -294,7 +294,7 @@ class NarwalCloudApi:
     ) -> list[ConsumableInfo]:
         """Return consumable lifetimes using the app's v3 list endpoint."""
         if self.account is None:
-            await self.login()
+            await self._ensure_login()
         result = await self._request(
             "POST",
             "/consumables-management-app-server/v3/consumables/list",
@@ -361,7 +361,7 @@ class NarwalCloudApi:
     ) -> list[NarwalNotification]:
         """Return the latest device messages from the Narwal cloud."""
         if self.account is None:
-            await self.login()
+            await self._ensure_login()
         result = await self._request(
             "GET",
             "/app-message-server/v1/device-message/oneDeviceListPage",
@@ -416,7 +416,7 @@ class NarwalCloudApi:
         the active map is known.
         """
         if self.account is None:
-            await self.login()
+            await self._ensure_login()
 
         if map_id is None:
             return await self._all_task_records(
@@ -502,7 +502,7 @@ class NarwalCloudApi:
     ) -> dict[str, Any]:
         """Return the read-only firmware update description."""
         if self.account is None:
-            await self.login()
+            await self._ensure_login()
         result = await self._request(
             "GET",
             "/app-ota-server/v1/firmware/current/version/describe",
@@ -535,7 +535,7 @@ class NarwalCloudApi:
     ) -> dict[str, Any] | None:
         """Return one cleaning record detail."""
         if self.account is None:
-            await self.login()
+            await self._ensure_login()
         result = await self._request(
             "GET",
             "/clean-record-app-server/v1/clean-record/detail",
@@ -557,7 +557,7 @@ class NarwalCloudApi:
     ) -> list[dict[str, Any]]:
         """Return dust-bag health history from the app endpoint."""
         if self.account is None:
-            await self.login()
+            await self._ensure_login()
         offset = datetime.now().astimezone().utcoffset()
         hours = int(offset.total_seconds() / 3600) if offset else 0
         result = await self._request(
@@ -586,7 +586,7 @@ class NarwalCloudApi:
     ) -> dict[str, Any] | None:
         """Return current dust-bag health and remaining days."""
         if self.account is None:
-            await self.login()
+            await self._ensure_login()
         result = await self._request(
             "GET",
             "/clean-record-app-server/v1/baseStation/getDustBagHealthDegreeAndDay",
@@ -609,7 +609,7 @@ class NarwalCloudApi:
     ) -> list[dict[str, str]]:
         """Return voice packages supported by the device language."""
         if self.account is None:
-            await self.login()
+            await self._ensure_login()
         result = await self._request(
             "GET",
             "/business-sweeper-app-platform-server/v1/special/voice/getListByParams",
@@ -673,7 +673,7 @@ def _as_optional_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return None
 
 
