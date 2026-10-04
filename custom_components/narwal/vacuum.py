@@ -257,10 +257,11 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             self.coordinator.client.start_rooms(room_ids),
             "room clean",
         )
+        code = response.result_code
         try:
-            result_name = CommandResult(response.result_code).name
+            result_name = CommandResult(code).name if code is not None else "UNKNOWN(None)"
         except ValueError:
-            result_name = f"UNKNOWN({response.result_code})"
+            result_name = f"UNKNOWN({code})"
         _LOGGER.info(
             "Room clean response: %s (code=%s), rooms=%s",
             result_name,
