@@ -15,6 +15,7 @@ from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .narwal_client import CommandResponse, ConsumableInfo, NarwalClient, NarwalConnectionError
 from .narwal_client.const import (
+    BASE_STATION_NOT_FOUND_ERROR,
     CONSUMABLE_CLOUD_RESET_TYPES,
     CONSUMABLE_MAINTAIN_TYPE_MAP,
     CONSUMABLE_REPLACE_TYPE_MAP,
@@ -106,8 +107,42 @@ async def async_setup_entry(
         if reset_entities:
             async_add_entities(reset_entities)
 
+    async_add_entities([NarwalResumeBaseSearchButton(coordinator)])
     _add_supported()
     entry.async_on_unload(coordinator.async_add_listener(_add_supported))
+
+
+class NarwalResumeBaseSearchButton(NarwalEntity, ButtonEntity):
+    """Send the app error dialog's Continue command, never a new clean/recall."""
+
+    _attr_translation_key = "resume_base_search"
+    _attr_icon = "mdi:play-circle-outline"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("button", "resume_base_search")
+
+    @property
+    def available(self) -> bool:
+        state = self.coordinator.data
+        return bool(
+            super().available
+            and state is not None
+            and state.error_codes == (BASE_STATION_NOT_FOUND_ERROR,)
+            and not state.is_docked
+        )
+
+    async def async_press(self) -> None:
+        if not self.available:
+            raise HomeAssistantError("Base station search retry is not currently available")
+        response = await self._async_await_command(
+            self.coordinator.client.resume(timeout=10.0), "resume base search"
+        )
+        if not response.success:
+            raise HomeAssistantError(
+                f"Narwal resume base search failed with result code {response.result_code}"
+            )
+        await self.coordinator.async_request_refresh()
 
 
 class NarwalActionButton(NarwalEntity, ButtonEntity):

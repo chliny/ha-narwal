@@ -18,7 +18,10 @@ TOPIC_CMD_GET_CLEAN_TIMELINE = "info/get_clean_time_line"
 
 # Task control
 TOPIC_CMD_PAUSE = "task/pause"
-TOPIC_CMD_RESUME = "task/resume"
+TOPIC_CMD_RESUME = "task/resume"  # App's error-dialog Continue also uses this topic.
+# J4 robot_exception catalog: 0x02100018 / app code 1023 = cannot find base.
+BASE_STATION_NOT_FOUND_ERROR = 0x02100018
+# Distinct J4 error 0x02100017 means return-to-base failed; do not conflate them.
 TOPIC_CMD_FORCE_END = "task/force_end"
 TOPIC_CMD_CANCEL = "task/cancel"
 

@@ -32,6 +32,7 @@ from .narwal_client.const import (
     CONSUMABLE_MAINTAIN_TYPE_MAP,
     CONSUMABLE_REPLACE_TYPE_MAP,
 )
+from .narwal_client.error_codes import error_message
 
 _TASK_RECORD_TYPE_STATES: dict[int, str] = {
     # APK ReportBaseTypes.TaskType, used by the work-record JSON model.
@@ -112,6 +113,7 @@ async def async_setup_entry(
         NarwalSensor(coordinator, description) for description in SENSOR_DESCRIPTIONS
     ]
     entities.append(NarwalChargingStateSensor(coordinator))
+    entities.append(NarwalRobotErrorSensor(coordinator))
     entities.append(NarwalLatestNotificationSensor(coordinator))
     entities.append(NarwalCleanProgressSensor(coordinator))
     known_consumables: set[str] = set()
@@ -180,6 +182,39 @@ class NarwalSensor(NarwalEntity, SensorEntity):
         if state is None:
             return None
         return self.entity_description.value_fn(state)
+
+
+class NarwalRobotErrorSensor(NarwalEntity, SensorEntity):
+    """Show readable descriptions of all currently active robot errors."""
+
+    _attr_translation_key = "robot_error"
+    _attr_icon = "mdi:robot-vacuum-alert"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._set_entity_identity("sensor", "robot_error")
+
+    @property
+    def native_value(self) -> str | None:
+        state = self.coordinator.data
+        if state is None or not state.error_codes:
+            return None
+        messages = list(dict.fromkeys(error_message(code) for code in state.error_codes))
+        if len(messages) == 1:
+            return messages[0]
+        return f"{messages[0]}（另有{len(messages) - 1}项不同故障）"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, list[dict[str, str]]]:
+        state = self.coordinator.data
+        if state is None:
+            return {"errors": []}
+        return {
+            "errors": [
+                {"code": f"0x{code:08X}", "message": error_message(code)}
+                for code in state.error_codes
+            ]
+        }
 
 
 class NarwalChargingStateSensor(NarwalEntity, SensorEntity):

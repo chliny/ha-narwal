@@ -70,6 +70,12 @@
       "cleaning_time": {
         "name": "Temps de nettoyage"
       },
+      "robot_error": {
+        "name": "Erreur du robot",
+        "state_attributes": {
+          "errors": {"name": "Erreurs actives"}
+        }
+      },
       "charging_state": {
         "name": "État de charge",
         "state": {
@@ -151,6 +157,9 @@
       }
     },
     "button": {
+      "resume_base_search": {
+        "name": "Reprendre la recherche de la station"
+      },
       "dry_mop": {
         "name": "Sécher les serpillières"
       },

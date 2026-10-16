@@ -1,4 +1,4 @@
-"""Offline regression tests for app-confirmed consumable reset routes."""
+"""Offline regression tests for app-confirmed button routes and guards."""
 
 from __future__ import annotations
 
@@ -11,17 +11,26 @@ from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.narwal.button import (
     NarwalConsumableResetButton,
+    NarwalResumeBaseSearchButton,
     _reset_protocol,
     async_setup_entry,
 )
 from custom_components.narwal.narwal_client.client import NarwalClient
 from custom_components.narwal.narwal_client.cloud_api import CloudAccount, NarwalCloudApi
-from custom_components.narwal.narwal_client.const import CommandResult
+from custom_components.narwal.narwal_client.const import (
+    BASE_STATION_NOT_FOUND_ERROR,
+    CommandResult,
+)
+from custom_components.narwal.narwal_client.error_codes import (
+    ROBOT_ERROR_MESSAGES,
+    error_message,
+)
 from custom_components.narwal.narwal_client.models import (
     CommandResponse,
     ConsumableInfo,
     NarwalState,
 )
+from custom_components.narwal.sensor import NarwalRobotErrorSensor
 
 
 def _item(type_id: int, *, category: int = 2, reset_supported: bool = True) -> ConsumableInfo:
@@ -57,6 +66,80 @@ def _coordinator(state: NarwalState) -> SimpleNamespace:
         async_add_listener=Mock(return_value=Mock()),
         async_request_refresh=AsyncMock(),
     )
+
+
+def test_base_search_error_decodes_from_wire_and_clears_on_snapshot() -> None:
+    client = NarwalClient(device_id="device", product_id="product")
+    payload = client._encode_bytes_field(
+        1, client._encode_varint_field(1, BASE_STATION_NOT_FOUND_ERROR)
+    )
+    state = client.state
+    state.update_from_base_status(client._decode_protobuf(payload))
+    assert state.error_codes == (BASE_STATION_NOT_FOUND_ERROR,)
+    coordinator = _coordinator(state)
+    sensor = NarwalRobotErrorSensor(coordinator)
+    assert sensor.native_value == "机器人找不到基站，请放入基站并对准充电片"
+    assert sensor.extra_state_attributes["errors"] == [
+        {"code": "0x02100018", "message": "机器人找不到基站，请放入基站并对准充电片"}
+    ]
+    state.update_from_base_status({"1": [{"1": 0x02100017}]})
+    assert sensor.native_value == "机器人回基站失败，请检查"  # a distinct app error
+    state.update_from_base_status({})
+    assert state.error_codes == ()
+
+
+def test_j4_error_catalog_has_readable_messages_and_unknown_fallback() -> None:
+    assert len(ROBOT_ERROR_MESSAGES) == 185
+    assert error_message(0x02100018) == "机器人找不到基站，请放入基站并对准充电片"
+    assert error_message(0x02100017) == "机器人回基站失败，请检查"
+    assert error_message(0xDEADBEEF) == "未知机器人故障（0xDEADBEEF）"
+
+
+def test_robot_error_sensor_combines_multiple_active_errors() -> None:
+    state = NarwalState()
+    state.update_from_base_status({"1": [{"1": 0x02100018}, {"1": 0x02100017}]})
+    sensor = NarwalRobotErrorSensor(_coordinator(state))
+    assert sensor.native_value == "机器人找不到基站，请放入基站并对准充电片（另有1项不同故障）"
+    assert [error["code"] for error in sensor.extra_state_attributes["errors"]] == [
+        "0x02100018",
+        "0x02100017",
+    ]
+    state.update_from_base_status({})
+    assert sensor.native_value is None
+    assert sensor.extra_state_attributes == {"errors": []}
+
+
+def test_base_search_retry_matches_app_and_requires_single_error() -> None:
+    state = NarwalState()
+    coordinator = _coordinator(state)
+    client = coordinator.client
+    client.resume = AsyncMock(return_value=CommandResponse(result_code=CommandResult.SUCCESS))
+    button = NarwalResumeBaseSearchButton(coordinator)
+    sensor = NarwalRobotErrorSensor(coordinator)
+    assert not button.available and sensor.native_value is None
+    with pytest.raises(HomeAssistantError):
+        asyncio.run(button.async_press())
+    client.resume.assert_not_awaited()
+
+    state.update_from_base_status({"1": {"1": BASE_STATION_NOT_FOUND_ERROR}, "11": 1})
+    assert button.available
+    assert sensor.native_value == "机器人找不到基站，请放入基站并对准充电片"
+    asyncio.run(button.async_press())
+    client.resume.assert_awaited_once_with(timeout=10.0)
+    coordinator.async_request_refresh.assert_awaited_once()
+    state.update_from_base_status(
+        {"1": [{"1": BASE_STATION_NOT_FOUND_ERROR}, {"1": 0x02100017}], "11": 1}
+    )
+    assert not button.available
+    state.update_from_base_status({"1": {"1": BASE_STATION_NOT_FOUND_ERROR}, "11": 2})
+    assert not button.available
+
+
+def test_base_search_retry_exact_command_topic_and_payload() -> None:
+    client = NarwalClient(device_id="device", product_id="product")
+    client.send_command = AsyncMock(return_value=CommandResponse(result_code=CommandResult.SUCCESS))
+    asyncio.run(client.resume(timeout=10.0))
+    client.send_command.assert_awaited_once_with("task/resume", timeout=10.0)
 
 
 def test_reset_request_routes_to_exact_robot_topic_and_protobuf() -> None:
@@ -137,11 +220,14 @@ def test_buttons_created_without_active_maintenance_alert() -> None:
     assert {entity.unique_id for entity in added} == {
         "narwal_test_device_reset_consumable_type_3",
         "narwal_test_device_reset_consumable_type_110",
+        "narwal_test_device_resume_base_search",
     }
     assert state.consumable_replace_items == set()
 
-    robot_button = next(entity for entity in added if entity._category == "replace")
-    cloud_button = next(entity for entity in added if entity._category == "cloud")
+    robot_button = next(
+        entity for entity in added if getattr(entity, "_category", None) == "replace"
+    )
+    cloud_button = next(entity for entity in added if getattr(entity, "_category", None) == "cloud")
     asyncio.run(robot_button.async_press())
     coordinator.client.reset_consumable.assert_awaited_once_with(
         category="replace", protocol_value=3

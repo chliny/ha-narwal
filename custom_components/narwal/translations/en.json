@@ -70,6 +70,12 @@
       "cleaning_time": {
         "name": "Cleaning time"
       },
+      "robot_error": {
+        "name": "Robot error",
+        "state_attributes": {
+          "errors": {"name": "Active errors"}
+        }
+      },
       "charging_state": {
         "name": "Charging",
         "state": {
@@ -151,6 +157,9 @@
       }
     },
     "button": {
+      "resume_base_search": {
+        "name": "Continue searching for base station"
+      },
       "dry_mop": {
         "name": "Dry mop pads"
       },

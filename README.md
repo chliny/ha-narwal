@@ -26,7 +26,7 @@
 - 清洁时间线；清扫面积和时长继续通过 MQTT 实时更新
 - 云端机器人通知同步，包括耗材更换或用尽提醒
 - 电量、清扫面积、清扫时间，以及显示当前/可用版本的只读固件更新状态
-- 回基站和充电状态
+- 回基站和充电状态；J4 机器人故障码及可读说明、继续原任务按钮
 - 地图、房间名称、机器人位置、轨迹与障碍物叠加
 - 实时推送、断线重连、状态订阅续期和轮询兜底
 - 云端凭据失效后的 Home Assistant 重认证流程
@@ -88,6 +88,55 @@ conditions:
 但不建议作为唯一的通知触发源：相同标题和内容的连续通知可能拥有不同消息 ID，
 传感器状态文本却可能相同。事件实体包含 `message_id`、标题、正文、分类和时间，
 并按消息 ID 在当前运行周期内去重。云端轮询间隔通常为 60 秒，通知可能有相应延迟。
+
+### 机器人故障码与重试原任务
+
+集成从机器人基础状态的 `errorCode` 故障列表读取当前故障，并通过唯一实体
+`sensor.narwal_<设备ID>_robot_error` 显示可读中文说明。传感器属性 `errors` 保留每个
+故障的十六进制码和对应文案；无故障时状态为空。当前整理了官方 App J4 中文目录中
+全部 **185 个**故障码及说明（目录在 [error_codes.py](<custom_components/narwal/narwal_client/error_codes.py>)）；
+J4 目录未收录的编码显示为“未知机器人故障（0x……）”。这些映射有 J4 型号范围，
+其他型号的文案仍需各自的 App 错误目录确认。
+
+例如 `0x02100018`（App 码 `1023`）是“机器人找不到基站”，而 `0x02100017` 是
+“机器人回基站失败，请检查”，统一传感器会显示各自对应说明。对应的
+`button.narwal_<设备ID>_resume_base_search` 仍仅在**找不到基站是唯一活动故障**且机器人
+未回基站时可用。它调用官方 App 故障弹窗“继续”使用的 `task/resume`，不是
+`supply/recall`（返回基站），也不会重新启动清扫任务。
+
+如需自动重试一次，可以在 HA 添加以下自动化并替换实体 ID。示例通过属性中的准确故障码
+识别故障，不依赖 UI 翻译或传感器的显示名称：
+
+```yaml
+alias: 云鲸找不到基站时继续一次
+triggers:
+  - trigger: state
+    entity_id: sensor.narwal_<设备ID>_robot_error
+    not_to:
+      - unknown
+      - unavailable
+conditions:
+  - condition: template
+    value_template: >-
+      {% set errors = trigger.to_state.attributes.errors | default([], true) %}
+      {{ errors | length == 1 and errors[0].code == '0x02100018' }}
+actions:
+  - delay: "00:00:15"
+  - condition: template
+    value_template: >-
+      {% set errors = state_attr('sensor.narwal_<设备ID>_robot_error', 'errors') or [] %}
+      {{ errors | length == 1 and errors[0].code == '0x02100018' }}
+  - condition: template
+    value_template: >-
+      {{ not is_state('button.narwal_<设备ID>_resume_base_search', 'unavailable') }}
+  - action: button.press
+    target:
+      entity_id: button.narwal_<设备ID>_resume_base_search
+mode: single
+```
+
+按钮自身也会在故障已消失、有其他故障或机器人已回基站时拒绝调用。此入口默认不自动
+操作。目前 J4 故障码来自官方 App 资源目录，完整上报与重试周期仍需实机验证。
 
 ### 手动安装
 

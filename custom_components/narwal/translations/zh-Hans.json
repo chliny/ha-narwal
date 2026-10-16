@@ -70,6 +70,12 @@
       "cleaning_time": {
         "name": "清扫时间"
       },
+      "robot_error": {
+        "name": "机器人故障",
+        "state_attributes": {
+          "errors": {"name": "当前故障列表"}
+        }
+      },
       "charging_state": {
         "name": "充电状态",
         "state": {
@@ -151,6 +157,9 @@
       }
     },
     "button": {
+      "resume_base_search": {
+        "name": "继续寻找基站并恢复任务"
+      },
       "dry_mop": {
         "name": "烘干拖布"
       },

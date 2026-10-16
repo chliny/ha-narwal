@@ -680,6 +680,10 @@ class NarwalState:
     # and must not be treated as independent proof that the robot is docked.
     charging_status: int = 0
 
+    # RobotBaseStatus field 1: repeated ErrorCode, sub-field 1 = identityCode.
+    # Full base-status snapshots replace rather than accumulate active errors.
+    error_codes: tuple[int, ...] = ()
+
     # Raw data for fields we haven't fully decoded yet
     raw_base_status: dict[str, Any] = field(default_factory=dict)
     raw_working_status: dict[str, Any] = field(default_factory=dict)
@@ -781,6 +785,19 @@ class NarwalState:
         Note: field 32 mirrors field 3 exactly (redundant).
         """
         self.raw_base_status = decoded
+        errors = decoded.get("1", [])
+        if isinstance(errors, dict):
+            errors = [errors]
+        self.error_codes = (
+            tuple(
+                code
+                for item in errors
+                if isinstance(item, dict)
+                if type(code := item.get("1")) is int and 0 < code <= 0xFFFFFFFF
+            )
+            if isinstance(errors, list)
+            else ()
+        )
         # This method consumes a full RobotBaseStatus message. Reset optional
         # protobuf fields first so omitted/default values cannot leave stale
         # task, pause, station-contact, or charging overlays behind.
