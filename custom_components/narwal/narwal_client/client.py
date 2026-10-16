@@ -11,6 +11,8 @@ from typing import Any
 
 from .const import (
     COMMAND_RESPONSE_TIMEOUT,
+    CONSUMABLE_MAINTAIN_TYPE_MAP,
+    CONSUMABLE_REPLACE_TYPE_MAP,
     TOPIC_CMD_CANCEL,
     TOPIC_CMD_DRY_MOP,
     TOPIC_CMD_DUST_GATHERING,
@@ -247,9 +249,7 @@ class NarwalClient:
         if not response.general_failed:
             return response
 
-        _LOGGER.info(
-            "Full CleanTask was rejected; retrying with the legacy whole-map schema"
-        )
+        _LOGGER.info("Full CleanTask was rejected; retrying with the legacy whole-map schema")
         return await self.send_command(
             TOPIC_CMD_START_CLEAN,
             payload=self._LEGACY_WHOLE_MAP_CLEAN_PAYLOAD,
@@ -708,8 +708,17 @@ class NarwalClient:
 
     async def reset_consumable(self, *, category: str, protocol_value: int) -> CommandResponse:
         """Reset one robot-side consumable counter."""
+        if category not in ("maintain", "replace"):
+            raise ValueError("Unknown consumable category")
+        allowed = (
+            set(CONSUMABLE_MAINTAIN_TYPE_MAP.values())
+            if category == "maintain"
+            else set(CONSUMABLE_REPLACE_TYPE_MAP.values())
+        )
+        if type(protocol_value) is not int or protocol_value not in allowed:
+            raise ValueError("Unknown consumable protocol value")
         field = 1 if category == "maintain" else 2
-        nested = self._encode_varint_field(field, int(protocol_value))
+        nested = self._encode_varint_field(field, protocol_value)
         response = await self.send_command(
             TOPIC_CMD_RESET_CONSUMABLE_INFO,
             self._encode_bytes_field(1, nested),

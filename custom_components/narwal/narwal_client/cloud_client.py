@@ -321,6 +321,22 @@ class NarwalCloudClient(NarwalClient):
             and self.last_broadcast_age <= _CLOUD_REACHABILITY_TIMEOUT
         )
 
+    async def reset_cloud_consumable(self, *, type_id: int) -> None:
+        """Reset a server-managed silver-ion consumable."""
+        device = self.cloud_device
+        if device is None:
+            raise NarwalConnectionError("Cloud device metadata is unavailable")
+        try:
+            await self._api.reset_cloud_consumable(
+                device_id=device.device_id,
+                product_id=device.product_id,
+                type_id=type_id,
+            )
+        except NarwalCloudAuthError as err:
+            raise NarwalAuthenticationError("Narwal cloud credentials expired") from err
+        except NarwalCloudError as err:
+            raise NarwalConnectionError("Narwal cloud reset failed") from err
+
     async def get_cloud_metadata(self, *, task_record_pages: int = 1) -> None:
         """Refresh consumable lifetimes and device notifications."""
         device = self.cloud_device

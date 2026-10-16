@@ -13,8 +13,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
-from .narwal_client import CommandResponse, ConsumableInfo, NarwalClient
+from .narwal_client import CommandResponse, ConsumableInfo, NarwalClient, NarwalConnectionError
 from .narwal_client.const import (
+    CONSUMABLE_CLOUD_RESET_TYPES,
     CONSUMABLE_MAINTAIN_TYPE_MAP,
     CONSUMABLE_REPLACE_TYPE_MAP,
 )
@@ -44,6 +45,8 @@ BUTTON_DESCRIPTIONS = (
 
 
 def _reset_protocol(consumable: ConsumableInfo) -> tuple[str, int] | None:
+    if consumable.category not in (1, 2):
+        return None
     mapping = (
         CONSUMABLE_MAINTAIN_TYPE_MAP if consumable.category == 1 else CONSUMABLE_REPLACE_TYPE_MAP
     )
@@ -85,24 +88,20 @@ async def async_setup_entry(
         for consumable in state.consumables.values():
             key = f"reset_consumable_{consumable.key}"
             protocol = _reset_protocol(consumable)
-            protocol_reported = bool(
-                protocol
-                and protocol[1]
-                in (
-                    state.consumable_maintain_items
-                    if protocol[0] == "maintain"
-                    else state.consumable_replace_items
-                )
-            )
+            cloud_reset = consumable.type_id in CONSUMABLE_CLOUD_RESET_TYPES
             if (
                 key not in known
                 and consumable.reset_supported
-                and protocol is not None
-                and protocol_reported
+                and (
+                    (cloud_reset and coordinator.cloud_metadata_available)
+                    or (protocol is not None and state.mqtt_consumables_supported)
+                )
             ):
                 known.add(key)
                 reset_entities.append(
-                    NarwalConsumableResetButton(coordinator, consumable, *protocol)
+                    NarwalConsumableResetButton(
+                        coordinator, consumable, *(protocol or ("cloud", consumable.type_id))
+                    )
                 )
         if reset_entities:
             async_add_entities(reset_entities)
@@ -189,21 +188,52 @@ class NarwalConsumableResetButton(NarwalEntity, ButtonEntity):
     ) -> None:
         super().__init__(coordinator)
         self._consumable_key = consumable.key
+        self._consumable_type_id = consumable.type_id
         self._category = category
         self._protocol_value = protocol_value
         self._attr_name = f"Reset {consumable.name}"
         self._set_entity_identity("button", f"reset_consumable_{consumable.key}")
 
-    async def async_press(self) -> None:
-        response = await self._async_await_command(
-            self.coordinator.client.reset_consumable(
-                category=self._category,
-                protocol_value=self._protocol_value,
-            ),
-            f"reset consumable {self._consumable_key}",
-        )
-        if not response.success:
-            raise HomeAssistantError(
-                f"Narwal action failed with result code {response.result_code}"
+    @property
+    def available(self) -> bool:
+        """Only allow a reset while its app-declared capability is current."""
+        state = self.coordinator.data
+        item = state.consumables.get(self._consumable_key) if state else None
+        if not item or not item.reset_supported or item.type_id != self._consumable_type_id:
+            return False
+        if self._category == "cloud":
+            return (
+                item.type_id in CONSUMABLE_CLOUD_RESET_TYPES
+                and self.coordinator.cloud_metadata_available
             )
+        return (
+            super().available
+            and state.mqtt_consumables_supported
+            and _reset_protocol(item) == (self._category, self._protocol_value)
+        )
+
+    async def async_press(self) -> None:
+        if not self.available:
+            raise HomeAssistantError("Consumable reset is not currently available")
+        if self._category == "cloud":
+            await self._async_await_cloud_reset()
+        else:
+            response = await self._async_await_command(
+                self.coordinator.client.reset_consumable(
+                    category=self._category,
+                    protocol_value=self._protocol_value,
+                ),
+                "reset consumable",
+            )
+            if not response.success:
+                raise HomeAssistantError(
+                    f"Narwal action failed with result code {response.result_code}"
+                )
         await self.coordinator.async_request_refresh()
+
+    async def _async_await_cloud_reset(self) -> None:
+        """Translate cloud failures without exposing device identifiers."""
+        try:
+            await self.coordinator.client.reset_cloud_consumable(type_id=self._protocol_value)
+        except NarwalConnectionError as err:
+            raise HomeAssistantError("Narwal cloud consumable reset failed") from err

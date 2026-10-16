@@ -56,32 +56,30 @@ TOPIC_CMD_ACTIVE_ROBOT = "common/active_robot_publish"
 # Command response timeout
 COMMAND_RESPONSE_TIMEOUT = 5.0  # seconds
 
-# Cloud consumable type -> robot ConsumableInfoPayload enum.
+# App NRConsumableType.off_14 -> ConsumableInfoPayload enum value. Only
+# unambiguous name matches in the unpacked app are eligible for MQTT reset.
+# Silver ions (110/111) are reset through the cloud v1 endpoint instead.
+CONSUMABLE_CLOUD_RESET_TYPES = frozenset({110, 111})
 CONSUMABLE_MAINTAIN_TYPE_MAP: dict[int, int] = {
-    13: 1,
-    1: 2,
-    14: 4,
-    15: 6,
-    16: 7,
-    17: 8,
-    23: 9,
-    22: 10,
+    101: 1,  # dustBox
+    1: 2,  # dustFilter
+    104: 4,  # washRibs
+    106: 6,  # universalWheel
+    107: 7,  # cliffSensor
+    108: 8,  # sideDistanceSensor
 }
 CONSUMABLE_REPLACE_TYPE_MAP: dict[int, int] = {
-    1: 1,
-    2: 2,
-    3: 3,
-    4: 4,
-    5: 5,
-    6: 6,
-    7: 7,
-    18: 8,
-    9: 20,
-    20: 21,
-    21: 21,
-    10: 22,
-    11: 23,
-    12: 24,
+    1: 1,  # dustFilter
+    2: 2,  # mop
+    3: 3,  # sideBrush
+    4: 4,  # cleanTankFilter
+    5: 5,  # rollerBrush
+    6: 6,  # detergent
+    109: 8,  # dustBag
+    20: 20,  # stationDustBag
+    22: 22,  # curingAgent
+    23: 23,  # heavyDetergent
+    24: 24,  # innerDustBox
 }
 
 

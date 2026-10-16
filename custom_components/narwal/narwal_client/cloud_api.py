@@ -352,6 +352,25 @@ class NarwalCloudApi:
             )
         return consumables
 
+    async def reset_cloud_consumable(
+        self, *, device_id: str, product_id: str, type_id: int
+    ) -> None:
+        """Reset a server-managed consumable using the app's v1 requester."""
+        if type_id not in (110, 111):
+            raise ValueError("Cloud reset is only confirmed for silver-ion consumables")
+        await self._request(
+            "POST",
+            "/consumables-management-app-server/v1/consumables/reset",
+            json={
+                "product_id": product_id,
+                "device_id": device_id,
+                "type": [type_id],
+                "language": "zh_CN",
+            },
+            device_id=device_id,
+            product_id=product_id,
+        )
+
     async def notifications(
         self,
         *,
