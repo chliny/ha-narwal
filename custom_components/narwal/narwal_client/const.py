@@ -33,8 +33,10 @@ TOPIC_CMD_WASH_AND_DRY_MOP = "supply/wash_and_dry_mop"
 TOPIC_CMD_DUST_GATHERING = "supply/dust_gathering"
 TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME = "supply/get_dry_mop_remain_time"
 
-# Cleaning (Pita protocol — correct for AX12)
-TOPIC_CMD_START_CLEAN = "clean/plan/start"  # protobuf CleanTask payload
+# APK StartClean.Request field 1 carries a CleanTask; StartWithPlan.Request
+# on clean/plan/start instead expects a varint planId (and optional mapId).
+TOPIC_CMD_START_CLEAN = "clean/start_clean"
+TOPIC_CMD_START_CLEAN_PLAN = "clean/plan/start"
 TOPIC_CMD_EASY_CLEAN = "clean/easy_clean/start"
 TOPIC_CMD_SET_FAN_LEVEL = "clean/set_fan_level"
 TOPIC_CMD_SET_MOP_HUMIDITY = "clean/set_mop_humidity"

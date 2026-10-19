@@ -42,6 +42,7 @@ from .const import (
     TOPIC_CMD_SET_LED,
     TOPIC_CMD_SET_MOP_HUMIDITY,
     TOPIC_CMD_START_CLEAN,
+    TOPIC_CMD_START_CLEAN_PLAN,
     TOPIC_CMD_SWITCH_MAP,
     TOPIC_CMD_TAKE_PICTURE,
     TOPIC_CMD_WASH_AND_DRY_MOP,
@@ -80,9 +81,6 @@ class NarwalCommandError(Exception):
 class NarwalClient:
     """Transport base containing Narwal cloud commands and state parsing."""
 
-    # Legacy whole-map CleanTask accepted by older robot firmware. Keep this
-    # as a narrow fallback when the newer inferred schema is rejected.
-    _LEGACY_WHOLE_MAP_CLEAN_PAYLOAD = bytes.fromhex("0a0e12002a0a0a060803100218012a00")
     _ZONE_TYPE_ROOM = 1
     _ZONE_TYPE_WHOLE_MAP = 3
 
@@ -241,44 +239,19 @@ class NarwalClient:
         return await self.send_command(TOPIC_CMD_YELL)
 
     async def start(self, **kwargs: Any) -> CommandResponse:
-        """Start unrestricted whole-map cleaning, preferring Freo Mind.
+        """Start whole-map Freo Mind through the App's StartClean endpoint.
 
-        The App starts the robot in "鲸灵托管" (``CleanMode.SMART``) by default.
-        Some firmwares only accept the older mode-specific task, so a rejected
-        smart task is retried with the previous default mode before falling
-        back to the legacy whole-map schema.
+        Do not retry with a different cleaning mode on failure: an accepted
+        command is not proof that the robot actually selected Freo Mind.
         """
         del kwargs
-        response = await self.send_command(
+        return await self.send_command(
             TOPIC_CMD_START_CLEAN,
             payload=self._build_clean_payload_v2(
                 clean_mode=CleanMode.SMART,
                 task_type=None,
+                enable_smart_mode=True,
             ),
-            timeout=10.0,
-        )
-        if not response.general_failed:
-            if response.success:
-                _LOGGER.info("Started whole-map clean in Freo Mind (鲸灵托管) mode")
-            return response
-
-        _LOGGER.info("Freo Mind clean task was rejected; retrying with the default clean mode")
-        # Keep the previous whole-map task unchanged so devices without Freo
-        # Mind support behave exactly as before this preference was added.
-        response = await self.send_command(
-            TOPIC_CMD_START_CLEAN,
-            payload=self._build_clean_payload_v2(),
-            timeout=10.0,
-        )
-        if not response.general_failed:
-            if response.success:
-                _LOGGER.info("Started whole-map clean with the default clean mode")
-            return response
-
-        _LOGGER.info("Full CleanTask was rejected; retrying with the legacy whole-map schema")
-        return await self.send_command(
-            TOPIC_CMD_START_CLEAN,
-            payload=self._LEGACY_WHOLE_MAP_CLEAN_PAYLOAD,
             timeout=10.0,
         )
 
@@ -289,13 +262,14 @@ class NarwalClient:
         mop_humidity: int | None = None,
         clean_mode: int = 3,
         task_type: int | None = CleanTaskType.SHORTCUT,
+        enable_smart_mode: bool = False,
     ) -> bytes:
-        """Build the current whole-map or room cleaning payload.
+        """Build StartClean.Request with one whole-map or several room items.
 
-        ``clean_mode`` is a :class:`CleanMode` value and ``task_type`` is a
-        :class:`CleanTaskType` value.  ``task_type=None`` omits the field so
-        the robot keeps its unspecified (mode-driven) task type, which is what
-        the App sends for Freo Mind.
+        The App sets CleanTask.option.enableSmartMode for smart cleaning; its
+        CleanTask.taskType is UNSPECIFIED (zero) for this mode.  These flags
+        are distinct from CleanParam.mode and must not be confused with the
+        saved-plan ID request on ``clean/plan/start``.
         """
         import blackboxprotobuf
 
@@ -319,6 +293,8 @@ class NarwalClient:
             "2": suction,
             "4": mop_humidity,
         }
+        if enable_smart_mode:
+            clean_params["9"] = 1  # CleanParam.enableSmartMode
         if room_ids:
             clean_items = [
                 {
@@ -354,6 +330,7 @@ class NarwalClient:
                         "1": {"type": "int"},
                         "2": {"type": "int"},
                         "4": {"type": "int"},
+                        "9": {"type": "int"},
                     },
                 },
                 "3": {"type": "int"},
@@ -365,7 +342,7 @@ class NarwalClient:
         clean_task: dict[str | int, Any] = {
             "1": map_id,
             "2": clean_items if len(clean_items) > 1 else clean_items[0],
-            "3": {},
+            "3": {"1": 1} if enable_smart_mode else {},
         }
         if task_type:
             clean_task["5"] = task_type
@@ -376,7 +353,7 @@ class NarwalClient:
                 "message_typedef": {
                     "1": {"type": "int"},
                     "2": item_type,
-                    "3": {"type": "message", "message_typedef": {}},
+                    "3": {"type": "message", "message_typedef": {"1": {"type": "int"}}},
                     "5": {"type": "int"},
                 },
             }
@@ -796,7 +773,7 @@ class NarwalClient:
     async def start_clean_plan(self, plan_id: int) -> CommandResponse:
         """Start one saved plan using StartWithPlan.Request.planId."""
         return await self.send_command(
-            TOPIC_CMD_START_CLEAN,
+            TOPIC_CMD_START_CLEAN_PLAN,
             self._encode_varint_field(1, int(plan_id)),
             timeout=10.0,
         )
