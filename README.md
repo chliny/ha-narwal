@@ -5,8 +5,8 @@
 
 ## 功能
 
-- 开始、暂停、继续和停止清扫；开始全屋清扫时优先使用鲸灵托管（Freo Mind），
-  设备拒绝时自动回退到默认清洁模式
+- 开始、暂停、继续和停止清扫；开始全屋清扫时请求鲸灵托管（Freo Mind），
+  设备拒绝时报告失败，不自动改用扫拖同时
 - 返回基站、查找机器人
 - 支持设备的吸力设置
 - 房间分区清扫（Home Assistant 2026.3 及以上）
@@ -27,7 +27,7 @@
 - 清洁时间线；清扫面积和时长继续通过 MQTT 实时更新
 - 云端机器人通知同步，包括耗材更换或用尽提醒
 - 电量、清扫面积、清扫时间，以及显示当前/可用版本的只读固件更新状态
-- 回基站和充电状态；J4 机器人故障码及可读说明、继续原任务按钮
+- 回基站和充电状态
 - 地图、房间名称、机器人位置、轨迹与障碍物叠加
 - 实时推送、断线重连、状态订阅续期和轮询兜底
 - 云端凭据失效后的 Home Assistant 重认证流程
@@ -55,89 +55,6 @@
 后续版本可直接在 HACS 中更新。HACS 下载失败时，请确认仓库根目录包含
 `hacs.json`，并且 `custom_components/narwal/manifest.json` 中包含版本号。
 操作入口可参考 [HACS 自定义仓库说明](https://www.hacs.xyz/docs/faq/custom_repositories/)。
-
-### 自动发送机器人通知
-
-集成不会自行调用 `notify.*` 服务，避免在用户没有配置通知目标时产生副作用。
-云端新消息会通过事件实体
-`event.narwal_<设备ID>_notification` 发出，推荐使用它触发 Home Assistant 通知：
-
-```yaml
-alias: 云鲸机器人通知
-triggers:
-  - trigger: state
-    entity_id: event.narwal_<设备ID>_notification
-actions:
-  - action: notify.mobile_app_手机
-    data:
-      title: "云鲸 {{ trigger.to_state.attributes.event_type }}"
-      message: >-
-        {{ trigger.to_state.attributes.title }}
-        {{ trigger.to_state.attributes.content }}
-```
-
-只提醒耗材消息时，可以增加条件：
-
-```yaml
-conditions:
-  - condition: template
-    value_template: >-
-      {{ trigger.to_state.attributes.event_type == 'consumable' }}
-```
-
-`sensor.narwal_<设备ID>_latest_notification` 适合在仪表盘显示最新消息，
-但不建议作为唯一的通知触发源：相同标题和内容的连续通知可能拥有不同消息 ID，
-传感器状态文本却可能相同。事件实体包含 `message_id`、标题、正文、分类和时间，
-并按消息 ID 在当前运行周期内去重。云端轮询间隔通常为 60 秒，通知可能有相应延迟。
-
-### 机器人故障码与重试原任务
-
-集成从机器人基础状态的 `errorCode` 故障列表读取当前故障，并通过唯一实体
-`sensor.narwal_<设备ID>_robot_error` 显示可读中文说明。传感器属性 `errors` 保留每个
-故障的十六进制码和对应文案；无故障时状态为空。当前整理了官方 App J4 中文目录中
-全部 **185 个**故障码及说明（目录在 [error_codes.py](<custom_components/narwal/narwal_client/error_codes.py>)）；
-J4 目录未收录的编码显示为“未知机器人故障（0x……）”。这些映射有 J4 型号范围，
-其他型号的文案仍需各自的 App 错误目录确认。
-
-例如 `0x02100018`（App 码 `1023`）是“机器人找不到基站”，而 `0x02100017` 是
-“机器人回基站失败，请检查”，统一传感器会显示各自对应说明。对应的
-`button.narwal_<设备ID>_resume_base_search` 仍仅在**找不到基站是唯一活动故障**且机器人
-未回基站时可用。它调用官方 App 故障弹窗“继续”使用的 `task/resume`，不是
-`supply/recall`（返回基站），也不会重新启动清扫任务。
-
-如需自动重试一次，可以在 HA 添加以下自动化并替换实体 ID。示例通过属性中的准确故障码
-识别故障，不依赖 UI 翻译或传感器的显示名称：
-
-```yaml
-alias: 云鲸找不到基站时继续一次
-triggers:
-  - trigger: state
-    entity_id: sensor.narwal_<设备ID>_robot_error
-    not_to:
-      - unknown
-      - unavailable
-conditions:
-  - condition: template
-    value_template: >-
-      {% set errors = trigger.to_state.attributes.errors | default([], true) %}
-      {{ errors | length == 1 and errors[0].code == '0x02100018' }}
-actions:
-  - delay: "00:00:15"
-  - condition: template
-    value_template: >-
-      {% set errors = state_attr('sensor.narwal_<设备ID>_robot_error', 'errors') or [] %}
-      {{ errors | length == 1 and errors[0].code == '0x02100018' }}
-  - condition: template
-    value_template: >-
-      {{ not is_state('button.narwal_<设备ID>_resume_base_search', 'unavailable') }}
-  - action: button.press
-    target:
-      entity_id: button.narwal_<设备ID>_resume_base_search
-mode: single
-```
-
-按钮自身也会在故障已消失、有其他故障或机器人已回基站时拒绝调用。此入口默认不自动
-操作。目前 J4 故障码来自官方 App 资源目录，完整上报与重试周期仍需实机验证。
 
 ### 手动安装
 
@@ -189,31 +106,6 @@ logger:
 提交问题时可以附上与 `custom_components.narwal` 有关的日志，但请先删除
 手机号、密码、访问令牌、设备 ID、序列号、IP 地址和 MQTT 消息内容等敏感
 信息。
-
-## 开发版本验证
-
-当前开发依赖固定为 HA 2026.8.1，最低支持 HA 2026.3.0。两者均要求 Python >=3.14.2，
-`pyproject.toml` 的项目安装要求则为 Python >=3.14.7。HACS 安装复制集成目录，
-不执行项目打包，因此项目的 Python 要求不能替代集成运行时兼容性验证。
-
-Ruff 和 Black 的目标版本固定为 Python 3.12，避免格式化工具生成当前代码库未采用的
-异常语法；最低 HA 运行环境使用 Python 3.14.2 及以上。
-
-CI 的最低/当前 HA 测试矩阵分别使用 HA 2026.3.0 和 HA 2026.8.1（均使用 Python 3.14）。
-在独立环境中从仓库根目录安装依赖：
-
-```sh
-python -m pip install -r requirements.txt 'pytest>=8.0' "homeassistant==${HA_VERSION}"
-python -m pytest -q
-```
-
-`HA_VERSION` 设置为对应矩阵版本。不要使用 `pip install .`、`pip install -e '.[dev]'`
-或 `uv sync` 验证 Python 3.12，因为项目打包要求会先拒绝该 Python 版本；
-也不要在最低版本任务中使用固定安装 HA 2026.8.1 的 `requirements-dev.txt`。
-
-本地全量回归结果：HA 2026.3.0 和 HA 2026.8.1（Python 3.14.7）均为 **408 passed**，
-集成目录也通过语法编译检查。CI 使用相同的全量测试命令。
-实体单元测试会在缺少可选摄像头依赖时使用替身，不能替代完整 HA 启动或真机验证。
 
 ## 来源说明
 
