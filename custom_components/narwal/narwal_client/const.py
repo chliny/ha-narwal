@@ -201,6 +201,42 @@ class CustomCleanStrategy(IntEnum):
     SMART = 3
 
 
+class CleanMode(IntEnum):
+    """Cleaning mode from the App ``CleanMode`` protobuf enum.
+
+    Values come from ``app_protol/proto/core/CleanTask.pbenum.dart`` and are
+    shared by ``CleanParam.mode`` and ``CleanPlan.cleanMode``.  The App shows
+    ``SMART`` as "鲸灵托管" (Freo Mind) and ``SWEEP_MOP_SYNC`` as "扫拖同时".
+    """
+
+    UNSPECIFIED = 0
+    SMART = 1
+    SWEEP = 2
+    MOP = 3
+    SWEEP_MOP_SYNC = 4
+    SWEEP_THEN_MOP = 5
+    COMPOSITE_CLEAN = 6
+
+
+class CleanTaskType(IntEnum):
+    """Task type from the App ``CleanTask.taskType`` protobuf enum.
+
+    Values come from ``app_protol/proto/core/CleanTask.pbenum.dart``.  A
+    whole-map task started by the App itself uses the mode-specific
+    ``GENERAL_*`` type, and ``SMART`` mode leaves the type unspecified.
+    """
+
+    UNSPECIFIED = 0
+    GENERAL_SWEEP = 1
+    GENERAL_MOP = 2
+    GENERAL_SWEEP_THEN_MOP = 3
+    GENERAL_SWEEP_MOP_SYNC = 4
+    CUSTOM_CLEAN = 5
+    SHORTCUT = 6
+    SCHEDULED = 7
+    NAVO_CLEAN = 8
+
+
 # robot_base_status field numbers
 class BaseStatusField(IntEnum):
     """Field numbers in the robot_base_status protobuf message.

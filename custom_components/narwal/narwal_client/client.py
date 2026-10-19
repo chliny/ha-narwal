@@ -47,6 +47,8 @@ from .const import (
     TOPIC_CMD_WASH_AND_DRY_MOP,
     TOPIC_CMD_WASH_MOP,
     TOPIC_CMD_YELL,
+    CleanMode,
+    CleanTaskType,
     CommandResult,
     CustomCleanStrategy,
     DryMopStrength,
@@ -239,14 +241,38 @@ class NarwalClient:
         return await self.send_command(TOPIC_CMD_YELL)
 
     async def start(self, **kwargs: Any) -> CommandResponse:
-        """Start unrestricted whole-map cleaning with a firmware fallback."""
+        """Start unrestricted whole-map cleaning, preferring Freo Mind.
+
+        The App starts the robot in "鲸灵托管" (``CleanMode.SMART``) by default.
+        Some firmwares only accept the older mode-specific task, so a rejected
+        smart task is retried with the previous default mode before falling
+        back to the legacy whole-map schema.
+        """
         del kwargs
+        response = await self.send_command(
+            TOPIC_CMD_START_CLEAN,
+            payload=self._build_clean_payload_v2(
+                clean_mode=CleanMode.SMART,
+                task_type=None,
+            ),
+            timeout=10.0,
+        )
+        if not response.general_failed:
+            if response.success:
+                _LOGGER.info("Started whole-map clean in Freo Mind (鲸灵托管) mode")
+            return response
+
+        _LOGGER.info("Freo Mind clean task was rejected; retrying with the default clean mode")
+        # Keep the previous whole-map task unchanged so devices without Freo
+        # Mind support behave exactly as before this preference was added.
         response = await self.send_command(
             TOPIC_CMD_START_CLEAN,
             payload=self._build_clean_payload_v2(),
             timeout=10.0,
         )
         if not response.general_failed:
+            if response.success:
+                _LOGGER.info("Started whole-map clean with the default clean mode")
             return response
 
         _LOGGER.info("Full CleanTask was rejected; retrying with the legacy whole-map schema")
@@ -262,8 +288,15 @@ class NarwalClient:
         suction: int | None = None,
         mop_humidity: int | None = None,
         clean_mode: int = 3,
+        task_type: int | None = CleanTaskType.SHORTCUT,
     ) -> bytes:
-        """Build the current whole-map or room cleaning payload."""
+        """Build the current whole-map or room cleaning payload.
+
+        ``clean_mode`` is a :class:`CleanMode` value and ``task_type`` is a
+        :class:`CleanTaskType` value.  ``task_type=None`` omits the field so
+        the robot keeps its unspecified (mode-driven) task type, which is what
+        the App sends for Freo Mind.
+        """
         import blackboxprotobuf
 
         if suction is None:
@@ -329,14 +362,14 @@ class NarwalClient:
         map_id = self.state.current_map_id
         if type(map_id) is not int or map_id <= 0:
             map_id = 1
-        message: dict[str | int, Any] = {
-            "1": {
-                "1": map_id,
-                "2": clean_items if len(clean_items) > 1 else clean_items[0],
-                "3": {},
-                "5": 6,
-            }
+        clean_task: dict[str | int, Any] = {
+            "1": map_id,
+            "2": clean_items if len(clean_items) > 1 else clean_items[0],
+            "3": {},
         }
+        if task_type:
+            clean_task["5"] = task_type
+        message: dict[str | int, Any] = {"1": clean_task}
         typedef: Any = {
             "1": {
                 "type": "message",

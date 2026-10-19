@@ -15,6 +15,8 @@ from .cloud_api import (
 )
 from .cloud_client import NarwalCloudClient
 from .const import (
+    CleanMode,
+    CleanTaskType,
     CommandResult,
     CustomCleanStrategy,
     DryMopStrength,
@@ -49,6 +51,8 @@ __all__ = [
     "CommandResponse",
     "CommandResult",
     "CustomCleanStrategy",
+    "CleanMode",
+    "CleanTaskType",
     "ConsumableInfo",
     "DeviceInfo",
     "DryMopStrength",
