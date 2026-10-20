@@ -156,7 +156,12 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
                 self.coordinator.client.start(),
                 "start",
             )
-            self._require_success(response, "start")
+            if response.result_code == CommandResult.CONFLICT:
+                # The robot already has an active task, so the start intent is
+                # satisfied even if this exact command was not accepted.
+                _LOGGER.info("Robot already has an active task; treating start as accepted")
+            else:
+                self._require_success(response, "start")
         await self._async_refresh_after_write()
 
     async def async_stop(self, **kwargs: Any) -> None:

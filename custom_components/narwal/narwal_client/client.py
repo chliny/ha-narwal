@@ -13,6 +13,7 @@ from .const import (
     COMMAND_RESPONSE_TIMEOUT,
     CONSUMABLE_MAINTAIN_TYPE_MAP,
     CONSUMABLE_REPLACE_TYPE_MAP,
+    EASY_CLEAN_PRODUCT_KEYS,
     TOPIC_CMD_CANCEL,
     TOPIC_CMD_DRY_MOP,
     TOPIC_CMD_DUST_GATHERING,
@@ -83,9 +84,19 @@ class NarwalClient:
 
     _ZONE_TYPE_ROOM = 1
     _ZONE_TYPE_WHOLE_MAP = 3
+    # The robot answers a start request quickly; a silent attempt is retried
+    # with the next payload variant after a short pause.
+    _START_ATTEMPT_TIMEOUT = 5.0
+    _START_RETRY_DELAY = 0.8
+    _START_TOPIC_LABELS = {
+        TOPIC_CMD_START_CLEAN: "StartClean",
+        TOPIC_CMD_START_CLEAN_PLAN: "plan start",
+        TOPIC_CMD_EASY_CLEAN: "easy clean",
+    }
 
     def __init__(self, *, device_id: str, product_id: str) -> None:
         self.device_id = device_id
+        self.product_id = product_id
         self.topic_prefix = f"/{product_id}"
         self.state = NarwalState()
         self.on_state_update: Callable[[NarwalState], None] | None = None
@@ -239,21 +250,121 @@ class NarwalClient:
         return await self.send_command(TOPIC_CMD_YELL)
 
     async def start(self, **kwargs: Any) -> CommandResponse:
-        """Start whole-map Freo Mind through the App's StartClean endpoint.
+        """Start whole-map cleaning, trying Freo Mind before other modes.
 
-        Do not retry with a different cleaning mode on failure: an accepted
-        command is not proof that the robot actually selected Freo Mind.
+        Firmware differs in which endpoint and payload shape it accepts, so
+        every supported variant is attempted in order and only the first
+        accepted command ends the sequence. The last rejection is returned and
+        transport failures surface as ``NarwalCommandError`` so Home Assistant
+        reports one failure after the whole sequence.
         """
         del kwargs
-        return await self.send_command(
-            TOPIC_CMD_START_CLEAN,
-            payload=self._build_clean_payload_v2(
-                clean_mode=CleanMode.SMART,
-                task_type=None,
-                enable_smart_mode=True,
-            ),
-            timeout=10.0,
+        attempts = self._start_attempts()
+        _LOGGER.debug(
+            "Start variants for product %s: %s",
+            self.product_id,
+            ", ".join(label for label, _topic, _payload in attempts),
         )
+        last_response: CommandResponse | None = None
+        last_error: NarwalCommandError | NarwalConnectionError | None = None
+        for index, (label, topic, payload) in enumerate(attempts, start=1):
+            if index > 1:
+                await asyncio.sleep(self._START_RETRY_DELAY)
+            try:
+                response = await self.send_command(
+                    topic,
+                    payload=payload,
+                    timeout=self._START_ATTEMPT_TIMEOUT,
+                )
+            except NarwalAuthenticationError:
+                # New credentials are required before any variant can succeed.
+                raise
+            except (NarwalCommandError, NarwalConnectionError) as err:
+                last_error = err
+                _LOGGER.warning(
+                    "Start attempt %d/%d (%s) got no usable reply: %s",
+                    index,
+                    len(attempts),
+                    label,
+                    err,
+                )
+                continue
+            if response.success:
+                _LOGGER.info("Start accepted by attempt %d/%d (%s)", index, len(attempts), label)
+                return response
+            if response.result_code == CommandResult.CONFLICT:
+                # An active task makes further variants pointless and may mean
+                # an earlier attempt was accepted after all.
+                _LOGGER.info(
+                    "Start attempt %d/%d (%s) reports an active task",
+                    index,
+                    len(attempts),
+                    label,
+                )
+                return response
+            last_response = response
+            _LOGGER.warning(
+                "Start attempt %d/%d (%s) rejected with result code %s",
+                index,
+                len(attempts),
+                label,
+                response.result_code,
+            )
+
+        if last_response is not None:
+            return last_response
+        if last_error is not None:
+            raise last_error
+        return CommandResponse(result_code=CommandResult.GENERAL_FAILED)
+
+    def _start_attempts(self) -> list[tuple[str, str, bytes]]:
+        """Return the ordered start variants: label, topic and payload.
+
+        Freo Mind is tried on every endpoint this model's App supports before
+        any other mode, so the preferred mode wins whenever the firmware can
+        accept it.  The endpoint order follows the App's DeviceModel branch.
+        """
+        freo_mind = self._build_clean_payload_v2(
+            clean_mode=CleanMode.SMART,
+            task_type=None,
+            enable_smart_mode=True,
+        )
+        sweep_mop = self._build_clean_payload_v2()
+        freo_mind_easy = self._build_easy_clean_payload(CleanMode.SMART)
+        sweep_mop_easy = self._build_easy_clean_payload(CleanMode.SWEEP_MOP_SYNC)
+        endpoints = self._start_endpoint_order()
+        attempts: list[tuple[str, str, bytes]] = []
+        for mode_name, clean_task, easy_payload in (
+            ("Freo Mind", freo_mind, freo_mind_easy),
+            ("sweep and mop", sweep_mop, sweep_mop_easy),
+        ):
+            for topic in endpoints:
+                payload = easy_payload if topic == TOPIC_CMD_EASY_CLEAN else clean_task
+                attempts.append(
+                    (f"{mode_name} on {self._START_TOPIC_LABELS[topic]}", topic, payload)
+                )
+        return attempts
+
+    def _start_endpoint_order(self) -> tuple[str, ...]:
+        """Return start endpoints in the order this model's App uses them."""
+        if self.product_id in EASY_CLEAN_PRODUCT_KEYS:  # ax3 / J3
+            return (
+                TOPIC_CMD_EASY_CLEAN,
+                TOPIC_CMD_START_CLEAN,
+                TOPIC_CMD_START_CLEAN_PLAN,
+            )
+        return (
+            TOPIC_CMD_START_CLEAN,
+            TOPIC_CMD_START_CLEAN_PLAN,
+            TOPIC_CMD_EASY_CLEAN,
+        )
+
+    def _build_easy_clean_payload(self, clean_mode: int) -> bytes:
+        """Build StartEasyClean.Request with cleanMode and mapId only."""
+        map_id = self.state.current_map_id
+        if type(map_id) is not int or map_id <= 0:
+            map_id = 1
+        return self._encode_varint_field(1, int(clean_mode)) + self._encode_varint_field(2, map_id)
 
     def _build_clean_payload_v2(
         self,

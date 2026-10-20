@@ -38,6 +38,10 @@ TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME = "supply/get_dry_mop_remain_time"
 TOPIC_CMD_START_CLEAN = "clean/start_clean"
 TOPIC_CMD_START_CLEAN_PLAN = "clean/plan/start"
 TOPIC_CMD_EASY_CLEAN = "clean/easy_clean/start"
+# The App's home start branches on DeviceModel: ax3 converts the CleanTask
+# into StartEasyClean.Request, every other model uses StartClean.Request on
+# clean/start_clean.  Product keys come from the APK's DeviceModel map.
+EASY_CLEAN_PRODUCT_KEYS: frozenset[str] = frozenset({"cUlfJN5JYP"})  # ax3 / J3
 TOPIC_CMD_SET_FAN_LEVEL = "clean/set_fan_level"
 TOPIC_CMD_SET_MOP_HUMIDITY = "clean/set_mop_humidity"
 TOPIC_CMD_GET_CURRENT_TASK = "clean/current_clean_task/get"

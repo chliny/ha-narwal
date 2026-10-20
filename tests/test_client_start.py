@@ -6,9 +6,12 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import blackboxprotobuf
+import pytest
 
-from custom_components.narwal.narwal_client.client import NarwalClient
+from custom_components.narwal.narwal_client.client import NarwalClient, NarwalCommandError
 from custom_components.narwal.narwal_client.const import (
+    EASY_CLEAN_PRODUCT_KEYS,
+    TOPIC_CMD_EASY_CLEAN,
     TOPIC_CMD_START_CLEAN,
     TOPIC_CMD_START_CLEAN_PLAN,
     CleanMode,
@@ -17,6 +20,9 @@ from custom_components.narwal.narwal_client.const import (
 )
 from custom_components.narwal.narwal_client.models import CommandResponse
 
+# DeviceModel.ax3 product key; the App converts its CleanTask to StartEasyClean.
+J3_PRODUCT_KEY = "cUlfJN5JYP"
+
 
 def _decode(payload: bytes) -> dict:
     """Decode a protobuf payload using inferred field definitions."""
@@ -24,9 +30,12 @@ def _decode(payload: bytes) -> dict:
     return decoded
 
 
-def _client() -> NarwalClient:
+def _client(product_id: str = "test-product") -> NarwalClient:
     """Create a transport-free client for clean-command tests."""
-    return NarwalClient(device_id="test-device", product_id="test-product")
+    client = NarwalClient(device_id="test-device", product_id=product_id)
+    # Tests exercise the fallback order without the real retry pause.
+    client._START_RETRY_DELAY = 0.0
+    return client
 
 
 def test_v2_default_payload_targets_whole_map_without_room_id() -> None:
@@ -124,10 +133,11 @@ def test_start_prefers_freo_mind_mode() -> None:
     assert "5" not in clean_task
 
 
-def test_start_rejection_never_changes_to_a_different_clean_mode() -> None:
-    """A rejected smart start cannot silently restart in sweep+mop mode."""
+def test_start_reports_failure_only_after_every_variant() -> None:
+    """All start variants are rejected before the frontend sees a failure."""
     client = _client()
     rejected = CommandResponse(result_code=CommandResult.GENERAL_FAILED)
+    attempts = client._start_attempts()
 
     with patch.object(
         client,
@@ -138,8 +148,120 @@ def test_start_rejection_never_changes_to_a_different_clean_mode() -> None:
         result = asyncio.run(client.start())
 
     assert result is rejected
-    send_command.assert_awaited_once()
-    assert send_command.await_args.args[0] == TOPIC_CMD_START_CLEAN
+    assert send_command.await_count == len(attempts)
+    assert [call.args[0] for call in send_command.await_args_list] == [
+        topic for _label, topic, _payload in attempts
+    ]
+
+
+def test_start_raises_after_silent_variants() -> None:
+    """A robot that never answers still produces one clear error."""
+    client = _client()
+
+    with (
+        patch.object(
+            client,
+            "send_command",
+            new_callable=AsyncMock,
+            side_effect=NarwalCommandError("No response for command"),
+        ) as send_command,
+        pytest.raises(NarwalCommandError),
+    ):
+        asyncio.run(client.start())
+
+    assert send_command.await_count == len(client._start_attempts())
+
+
+def test_start_retries_next_variant_when_robot_stays_silent() -> None:
+    """A silent Freo Mind attempt falls through to the plan endpoint."""
+    client = _client()
+    success = CommandResponse(result_code=CommandResult.SUCCESS)
+
+    with patch.object(
+        client,
+        "send_command",
+        new_callable=AsyncMock,
+        side_effect=[NarwalCommandError("No response for command"), success],
+    ) as send_command:
+        result = asyncio.run(client.start())
+
+    assert result is success
+    assert send_command.await_count == 2
+    assert send_command.await_args_list[0].args[0] == TOPIC_CMD_START_CLEAN
+    assert send_command.await_args_list[1].args[0] == TOPIC_CMD_START_CLEAN_PLAN
+
+
+def test_start_reaches_sweep_and_mop_after_smart_rejections() -> None:
+    """Devices that reject Freo Mind everywhere still start with the old task."""
+    client = _client()
+    rejected = CommandResponse(result_code=CommandResult.GENERAL_FAILED)
+    success = CommandResponse(result_code=CommandResult.SUCCESS)
+
+    with patch.object(
+        client,
+        "send_command",
+        new_callable=AsyncMock,
+        side_effect=[rejected, rejected, rejected, success],
+    ) as send_command:
+        result = asyncio.run(client.start())
+
+    assert result is success
+    assert send_command.await_count == 4
+    fallback = send_command.await_args_list[3]
+    assert fallback.args[0] == TOPIC_CMD_START_CLEAN
+    clean_task = _decode(fallback.kwargs["payload"])["1"]
+    assert clean_task["2"]["1"] == {"1": client._ZONE_TYPE_WHOLE_MAP}
+    assert clean_task["2"]["2"]["1"] == 3
+    assert clean_task["5"] == CleanTaskType.SHORTCUT
+
+
+def test_start_orders_every_freo_mind_variant_first() -> None:
+    """Freo Mind is exhausted on all endpoints before sweep+mop is tried."""
+    client = _client()
+    attempts = client._start_attempts()
+
+    assert [label.split(" on ")[0] for label, _topic, _payload in attempts] == [
+        "Freo Mind",
+        "Freo Mind",
+        "Freo Mind",
+        "sweep and mop",
+        "sweep and mop",
+        "sweep and mop",
+    ]
+    assert [topic for _label, topic, _payload in attempts] == [
+        TOPIC_CMD_START_CLEAN,
+        TOPIC_CMD_START_CLEAN_PLAN,
+        TOPIC_CMD_EASY_CLEAN,
+        TOPIC_CMD_START_CLEAN,
+        TOPIC_CMD_START_CLEAN_PLAN,
+        TOPIC_CMD_EASY_CLEAN,
+    ]
+
+
+def test_j3_starts_freo_mind_on_the_easy_clean_endpoint() -> None:
+    """Model ax3 (J3) uses StartEasyClean before StartClean, as the App does."""
+    assert {J3_PRODUCT_KEY} == EASY_CLEAN_PRODUCT_KEYS
+    client = _client(product_id=J3_PRODUCT_KEY)
+    attempts = client._start_attempts()
+
+    assert [topic for _label, topic, _payload in attempts] == [
+        TOPIC_CMD_EASY_CLEAN,
+        TOPIC_CMD_START_CLEAN,
+        TOPIC_CMD_START_CLEAN_PLAN,
+        TOPIC_CMD_EASY_CLEAN,
+        TOPIC_CMD_START_CLEAN,
+        TOPIC_CMD_START_CLEAN_PLAN,
+    ]
+    assert [label.split(" on ")[0] for label, _topic, _payload in attempts] == [
+        "Freo Mind",
+        "Freo Mind",
+        "Freo Mind",
+        "sweep and mop",
+        "sweep and mop",
+        "sweep and mop",
+    ]
+    first_payload = _decode(attempts[0][2])
+    assert first_payload == {"1": CleanMode.SMART, "2": 1}
 
 
 def test_general_failure_uses_protocol_name_and_compatibility_alias() -> None:
