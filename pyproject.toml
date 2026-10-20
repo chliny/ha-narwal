@@ -1,6 +1,6 @@
 [project]
 name = "narwal-integration"
-version = "0.5.7"
+version = "0.5.8"
 description = "Home Assistant integration for Narwal robot vacuums via cloud MQTT"
 requires-python = ">=3.14.7"
 license = "MIT"

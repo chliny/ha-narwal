@@ -12,5 +12,5 @@
     "bbpb==1.4.2",
     "paho-mqtt>=2.1.0"
   ],
-  "version": "0.5.7"
+  "version": "0.5.8"
 }
