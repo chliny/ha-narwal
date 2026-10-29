@@ -18,7 +18,7 @@ from custom_components.narwal.narwal_client.const import (
     CleanTaskType,
     CommandResult,
 )
-from custom_components.narwal.narwal_client.models import CommandResponse
+from custom_components.narwal.narwal_client.models import CommandResponse, MapData, RoomInfo
 
 # DeviceModel.ax3 product key; the App converts its CleanTask to StartEasyClean.
 J3_PRODUCT_KEY = "cUlfJN5JYP"
@@ -35,6 +35,7 @@ def _client(product_id: str = "test-product") -> NarwalClient:
     client = NarwalClient(device_id="test-device", product_id=product_id)
     # Tests exercise the fallback order without the real retry pause.
     client._START_RETRY_DELAY = 0.0
+    client.get_map = AsyncMock(return_value=client.state.map_data)
     return client
 
 
@@ -173,7 +174,7 @@ def test_start_raises_after_silent_variants() -> None:
 
 
 def test_start_retries_next_variant_when_robot_stays_silent() -> None:
-    """A silent Freo Mind attempt falls through to the plan endpoint."""
+    """A silent Freo Mind attempt falls through to explicit whole-house easy clean."""
     client = _client()
     success = CommandResponse(result_code=CommandResult.SUCCESS)
 
@@ -188,7 +189,7 @@ def test_start_retries_next_variant_when_robot_stays_silent() -> None:
     assert result is success
     assert send_command.await_count == 2
     assert send_command.await_args_list[0].args[0] == TOPIC_CMD_START_CLEAN
-    assert send_command.await_args_list[1].args[0] == TOPIC_CMD_START_CLEAN_PLAN
+    assert send_command.await_args_list[1].args[0] == TOPIC_CMD_EASY_CLEAN
 
 
 def test_start_reaches_sweep_and_mop_after_smart_rejections() -> None:
@@ -201,13 +202,13 @@ def test_start_reaches_sweep_and_mop_after_smart_rejections() -> None:
         client,
         "send_command",
         new_callable=AsyncMock,
-        side_effect=[rejected, rejected, rejected, success],
+        side_effect=[rejected, rejected, success],
     ) as send_command:
         result = asyncio.run(client.start())
 
     assert result is success
-    assert send_command.await_count == 4
-    fallback = send_command.await_args_list[3]
+    assert send_command.await_count == 3
+    fallback = send_command.await_args_list[2]
     assert fallback.args[0] == TOPIC_CMD_START_CLEAN
     clean_task = _decode(fallback.kwargs["payload"])["1"]
     assert clean_task["2"]["1"] == {"1": client._ZONE_TYPE_WHOLE_MAP}
@@ -223,17 +224,13 @@ def test_start_orders_every_freo_mind_variant_first() -> None:
     assert [label.split(" on ")[0] for label, _topic, _payload in attempts] == [
         "Freo Mind",
         "Freo Mind",
-        "Freo Mind",
-        "sweep and mop",
         "sweep and mop",
         "sweep and mop",
     ]
     assert [topic for _label, topic, _payload in attempts] == [
         TOPIC_CMD_START_CLEAN,
-        TOPIC_CMD_START_CLEAN_PLAN,
         TOPIC_CMD_EASY_CLEAN,
         TOPIC_CMD_START_CLEAN,
-        TOPIC_CMD_START_CLEAN_PLAN,
         TOPIC_CMD_EASY_CLEAN,
     ]
 
@@ -247,21 +244,77 @@ def test_j3_starts_freo_mind_on_the_easy_clean_endpoint() -> None:
     assert [topic for _label, topic, _payload in attempts] == [
         TOPIC_CMD_EASY_CLEAN,
         TOPIC_CMD_START_CLEAN,
-        TOPIC_CMD_START_CLEAN_PLAN,
         TOPIC_CMD_EASY_CLEAN,
         TOPIC_CMD_START_CLEAN,
-        TOPIC_CMD_START_CLEAN_PLAN,
     ]
     assert [label.split(" on ")[0] for label, _topic, _payload in attempts] == [
         "Freo Mind",
         "Freo Mind",
-        "Freo Mind",
-        "sweep and mop",
         "sweep and mop",
         "sweep and mop",
     ]
     first_payload = _decode(attempts[0][2])
-    assert first_payload == {"1": CleanMode.SMART, "2": 1}
+    assert first_payload == {"1": CleanMode.SMART, "2": 1, "3": {"2": 3}}
+
+
+@pytest.mark.parametrize("product_id", [J3_PRODUCT_KEY, "EHf6cRNRGT"])
+@pytest.mark.parametrize("room_count", [0, 3, 7])
+def test_every_default_start_variant_explicitly_targets_whole_home(
+    product_id: str, room_count: int
+) -> None:
+    """Split rooms or a stale three-room cache cannot constrain default start."""
+    client = _client(product_id)
+    client.state.current_map_id = 42
+    client.state.map_data = MapData(rooms=[RoomInfo(room_id=i) for i in range(1, room_count + 1)])
+
+    for _label, topic, payload in client._start_attempts():
+        decoded = _decode(payload)
+        assert topic != TOPIC_CMD_START_CLEAN_PLAN
+        if topic == TOPIC_CMD_EASY_CLEAN:
+            assert decoded["2"] == 42
+            # CleanAreaOption: field 2 is cleanZoneType, NOT zoneId.
+            assert decoded["3"] == {"2": 3}  # WHOLE_HOUSE, no room IDs
+        else:
+            assert decoded["1"]["1"] == 42
+            assert decoded["1"]["2"]["1"] == {"1": 3}  # WHOLE_MAP
+
+
+@pytest.mark.parametrize("product_id", [J3_PRODUCT_KEY, "EHf6cRNRGT"])
+@pytest.mark.parametrize("room_count", [3, 7])
+def test_start_targets_whole_home_without_downloading_map(product_id: str, room_count: int) -> None:
+    """Starting is independent of map downloads and cached room counts."""
+    client = _client(product_id)
+    client.state.current_map_id = 42
+    cached_map = MapData(rooms=[RoomInfo(room_id=i) for i in range(1, room_count + 1)])
+    client.state.map_data = cached_map
+
+    with (
+        patch.object(
+            client,
+            "get_map",
+            new_callable=AsyncMock,
+            side_effect=AssertionError("start must not download the map"),
+        ) as get_map,
+        patch.object(
+            client,
+            "send_command",
+            new_callable=AsyncMock,
+            return_value=CommandResponse(result_code=CommandResult.SUCCESS),
+        ) as send_command,
+    ):
+        result = asyncio.run(client.start())
+
+    assert result.success
+    get_map.assert_not_awaited()
+    assert client.state.map_data is cached_map
+    send_command.assert_awaited_once()
+    decoded = _decode(send_command.await_args.kwargs["payload"])
+    if product_id == J3_PRODUCT_KEY:
+        assert decoded["2"] == 42
+        assert decoded["3"] == {"2": 3}
+    else:
+        assert decoded["1"]["1"] == 42
+        assert decoded["1"]["2"]["1"] == {"1": 3}
 
 
 def test_general_failure_uses_protocol_name_and_compatibility_alias() -> None:

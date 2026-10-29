@@ -98,6 +98,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._fast_poll_remaining = 0
         self._prev_working_status = WorkingStatus.UNKNOWN
         self._map_fetch_pending = False
+        self._map_refresh_retry_at = 0.0
         self._last_display_map_resub: float = 0.0
         self._consecutive_failures = 0
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
@@ -333,8 +334,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         # Push data arriving means robot is reachable — reset failure counter
         self._consecutive_failures = 0
 
-        # Fetch static map if missing (get_map failed at startup)
-        if state.map_data is None and not self._map_fetch_pending:
+        # Load only on a missing map or an observed map-change signal.
+        if self._map_refresh_due():
             self._map_fetch_pending = True
             self.config_entry.async_create_background_task(
                 self.hass,
@@ -406,19 +407,43 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             registry.async_update_device(device.id, sw_version=firmware_version)
         self._device_registry_firmware_version = firmware_version
 
-    async def _fetch_missing_map(self) -> None:
-        """Fetch static map when it's missing (get_map failed at startup)."""
+    def _map_refresh_due(self) -> bool:
+        """No periodic downloads: reload only missing or signalled-stale maps."""
+        return (
+            (self.client.state.map_data is None or self.client.map_refresh_needed)
+            and not self._map_fetch_pending
+            and time.monotonic() >= self._map_refresh_retry_at
+        )
+
+    async def _refresh_static_map(self) -> bool:
+        """Download the static map once, applying failure backoff.
+
+        Returns True when a fresh map is cached. Callers own any follow-up
+        side effects so a poll never re-subscribes topics.
+        """
         try:
             await self.client.get_map()
-            _LOGGER.info("Static map loaded (was missing at startup)")
         except Exception:
-            _LOGGER.debug("Map fetch failed — will retry on next broadcast")
-            return
+            # Live broadcasts can arrive every second. A failed optional map
+            # download must not turn them into a tight retry loop.
+            self._map_refresh_retry_at = time.monotonic() + 60.0
+            _LOGGER.debug("Map fetch failed — retry after backoff", exc_info=True)
+            return False
+        self._map_refresh_retry_at = 0.0
+        _LOGGER.info("Static map loaded after invalidation or initial load")
+        return True
+
+    async def _fetch_missing_map(self) -> None:
+        """Broadcast path: recover a missing map or reload a stale one."""
+        try:
+            loaded = await self._refresh_static_map()
         finally:
             # This flag tracks an in-flight request, not whether a map has ever
             # loaded.  Clear it on success too so a later invalidation can
             # schedule a fresh recovery request.
             self._map_fetch_pending = False
+        if not loaded:
+            return
         try:
             await self.client.subscribe_to_topics()
         except Exception:
@@ -482,10 +507,14 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             include_static=self._extended_refresh_count % 5 == 0
         )
 
-        # Retry map fetch if it failed during setup
-        if self.client.state.map_data is None:
-            with contextlib.suppress(Exception):
-                await self.client.get_map()
+        # Existing status polls can detect a map-ID change or retry a failed
+        # event-triggered download; unchanged maps are never downloaded here.
+        if self._map_refresh_due():
+            self._map_fetch_pending = True
+            try:
+                await self._refresh_static_map()
+            finally:
+                self._map_fetch_pending = False
 
         # Manage fast poll countdown
         if self._fast_poll_remaining > 0:

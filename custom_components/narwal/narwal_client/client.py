@@ -90,7 +90,6 @@ class NarwalClient:
     _START_RETRY_DELAY = 0.8
     _START_TOPIC_LABELS = {
         TOPIC_CMD_START_CLEAN: "StartClean",
-        TOPIC_CMD_START_CLEAN_PLAN: "plan start",
         TOPIC_CMD_EASY_CLEAN: "easy clean",
     }
 
@@ -106,6 +105,10 @@ class NarwalClient:
         self._command_lock = asyncio.Lock()
         self._should_reconnect = True
         self._map_generation = 0
+        self.map_refresh_needed = False
+        self._reported_map_version: int | None = None
+        self._display_map_seq: int | None = None
+        self._observed_map_id: int | None = None
 
     @property
     def last_broadcast_age(self) -> float:
@@ -138,6 +141,7 @@ class NarwalClient:
                 "3": (dict, list),
                 "11": int,
                 "13": (bytes, str),
+                "30": int,
                 "36": int,
                 "38": (int, float),
                 "46": (dict, list),
@@ -145,7 +149,7 @@ class NarwalClient:
             },
             "upgrade/upgrade_status": {"4": int, "7": (bytes, str), "8": (bytes, str)},
             "status/download_status": {"1": int},
-            "map/display_map": {"1": dict, "5": dict},
+            "map/display_map": {"1": dict, "5": dict, "7": dict, "8": dict},
             "status/time_line_status": {"1": (dict, list)},
         }
         known_fields = schemas.get(short_topic, {})
@@ -169,6 +173,7 @@ class NarwalClient:
                 self.state.update_from_working_status(decoded)
             elif short_topic == "status/robot_base_status":
                 self.state.update_from_base_status(decoded)
+                self._observe_map_id(decoded.get("30"))
             elif short_topic == "upgrade/upgrade_status":
                 self.state.update_from_upgrade_status(decoded)
             elif short_topic == "status/download_status":
@@ -176,6 +181,12 @@ class NarwalClient:
             elif short_topic == "map/display_map":
                 self.state.map_display_data = MapDisplayData.from_broadcast(decoded)
                 self._last_display_map_time = time.monotonic()
+                entire_map = decoded.get("8")
+                if isinstance(entire_map, dict):
+                    self._observe_map_version(entire_map.get("2"))
+                incremental = decoded.get("7")
+                if isinstance(incremental, dict):
+                    self._observe_map_sequence(incremental)
             elif short_topic == "status/time_line_status":
                 self._update_clean_timeline(decoded)
             else:
@@ -202,6 +213,61 @@ class NarwalClient:
 
         decoded, _ = blackboxprotobuf.decode_message(payload)
         return {str(key): value for key, value in decoded.items()}
+
+    def _observe_map_id(self, value: Any) -> None:
+        """Observe RobotBaseStatus.mapId (field 30), including App switches.
+
+        Compare against the previously reported ID, not just the cached map's
+        ID: on models where these two IDs are not interchangeable, comparing
+        against the cached value would invalidate the map on every broadcast.
+        """
+        if type(value) is not int or value <= 0 or value == self._observed_map_id:
+            return
+        self._observed_map_id = value
+        if value == self.state.current_map_id:
+            return
+        self.state.current_map_id = value
+        self.state.map_data = None  # Never show the previous map's room IDs.
+        self.state.map_display_data = None
+        self._reported_map_version = None
+        self._display_map_seq = None
+        self._map_generation += 1
+        self.map_refresh_needed = True
+
+    def _observe_map_version(self, value: Any) -> None:
+        """Observe DisplayMap.entireMapData.mapVersion, not its live seqId."""
+        if type(value) is not int or value <= 0 or value == self._reported_map_version:
+            return
+        self._reported_map_version = value
+        cached = self.state.map_data
+        if cached is not None and cached.raw.get("2") == value:
+            return
+        # Do not discard the last good image/room list during a same-map edit.
+        # Generation guards also reject a download started before this event.
+        self._map_generation += 1
+        self.map_refresh_needed = True
+
+    def _observe_map_sequence(self, incremental: dict[str, Any]) -> None:
+        """Reload on a sequence gap, not ordinary contiguous live updates.
+
+        The App compares its cached sequence with IncrementalMapData's
+        startEqId (1) and currentSeqId (2), discarding old packets and asking
+        for a fresh map when the start is ahead of the cached sequence.
+        """
+        start, current = incremental.get("1"), incremental.get("2")
+        if type(start) is not int or type(current) is not int or not 0 <= start <= current:
+            return
+        previous = self._display_map_seq
+        if previous is None and self.state.map_data is not None:
+            cached_seq = self.state.map_data.raw.get("22")
+            if type(cached_seq) is int and cached_seq >= 0:
+                previous = cached_seq
+        if previous is not None and current <= previous:
+            return
+        self._display_map_seq = current
+        if previous is None or previous < start:
+            self._map_generation += 1
+            self.map_refresh_needed = True
 
     @staticmethod
     def _encode_varint(value: int) -> bytes:
@@ -346,25 +412,34 @@ class NarwalClient:
         return attempts
 
     def _start_endpoint_order(self) -> tuple[str, ...]:
-        """Return start endpoints in the order this model's App uses them."""
+        """Prefer the model's start endpoint, never a saved-plan command.
+
+        clean/plan/start expects a plan ID, not a CleanTask. A saved plan may
+        retain an old subset of rooms and cannot guarantee whole-home scope.
+        Keep it exclusively for explicit start_clean_plan calls.
+        """
         if self.product_id in EASY_CLEAN_PRODUCT_KEYS:  # ax3 / J3
-            return (
-                TOPIC_CMD_EASY_CLEAN,
-                TOPIC_CMD_START_CLEAN,
-                TOPIC_CMD_START_CLEAN_PLAN,
-            )
-        return (
-            TOPIC_CMD_START_CLEAN,
-            TOPIC_CMD_START_CLEAN_PLAN,
-            TOPIC_CMD_EASY_CLEAN,
-        )
+            return (TOPIC_CMD_EASY_CLEAN, TOPIC_CMD_START_CLEAN)
+        return (TOPIC_CMD_START_CLEAN, TOPIC_CMD_EASY_CLEAN)
 
     def _build_easy_clean_payload(self, clean_mode: int) -> bytes:
-        """Build StartEasyClean.Request with cleanMode and mapId only."""
+        """Build StartEasyClean.Request with an explicit whole-house scope.
+
+        Field 3 is repeated CleanAreaOption. Its field 2 (cleanZoneType=3)
+        selects WHOLE_HOUSE, distinct from field 1 (zoneId). Omitting the
+        options leaves the scope unspecified, so a mode alone cannot guarantee
+        all rooms after the App splits/merges them. Do not copy cached room IDs
+        or a previous task's selection into a default whole-home start.
+        """
         map_id = self.state.current_map_id
         if type(map_id) is not int or map_id <= 0:
             map_id = 1
-        return self._encode_varint_field(1, int(clean_mode)) + self._encode_varint_field(2, map_id)
+        whole_house = self._encode_varint_field(2, 3)  # CleanZoneType.WHOLE_HOUSE
+        return (
+            self._encode_varint_field(1, int(clean_mode))
+            + self._encode_varint_field(2, map_id)
+            + self._encode_bytes_field(3, whole_house)
+        )
 
     def _build_clean_payload_v2(
         self,
@@ -678,6 +753,7 @@ class NarwalClient:
         if status_data:
             if full_update:
                 self.state.update_from_base_status(status_data)
+                self._observe_map_id(status_data.get("30"))
             else:
                 self.state.update_battery_from_base_status(status_data)
         return response
@@ -718,12 +794,17 @@ class NarwalClient:
         ):
             raise NarwalCommandError("Downloaded map pixel data is invalid")
         if map_generation != self._map_generation:
-            raise NarwalCommandError("Downloaded map was superseded by a map switch")
+            raise NarwalCommandError("Downloaded map was superseded by a map switch or edit")
+        version = candidate.raw.get("2")
+        self._reported_map_version = version if type(version) is int and version > 0 else None
+        sequence = candidate.raw.get("22")
+        self._display_map_seq = sequence if type(sequence) is int and sequence >= 0 else None
 
         map_id = self._as_int(candidate.raw.get("1"))
         self.state.map_data = candidate
         if map_id is not None:
             self.state.current_map_id = map_id
+        self.map_refresh_needed = False
         return candidate
 
     async def get_all_maps(self) -> CommandResponse:
@@ -765,6 +846,9 @@ class NarwalClient:
         )
         if response.success:
             self._map_generation += 1
+            self._reported_map_version = None
+            self._display_map_seq = None
+            self.map_refresh_needed = True
             self.state.current_map_id = int(map_id)
             self.state.map_data = None
             self.state.map_display_data = None
