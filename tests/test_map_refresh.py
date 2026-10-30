@@ -188,7 +188,9 @@ def test_map_id_change_invalidates_old_rooms_only_once() -> None:
     client = _client()
     assert _broadcast(client, "status/robot_base_status", {"30": 43})
     assert _broadcast(client, "status/robot_base_status", {"30": 43})
-    assert client.state.current_map_id == 43
+    # The active map ID stays authoritative from get_map/switch_map so a start
+    # request never carries a base-status ID from a different domain.
+    assert client.state.current_map_id == 42
     assert client.state.map_data is None
     assert client.map_refresh_needed
     assert client._map_generation == 1
@@ -217,7 +219,8 @@ def test_existing_status_poll_detects_external_map_switch() -> None:
         return_value=CommandResponse(data={"2": {"30": 43}}),
     ):
         asyncio.run(client.get_status())
-    assert client.state.current_map_id == 43
+    assert client.state.current_map_id == 42
+    assert client.state.map_data is None
     assert client.map_refresh_needed
 
 

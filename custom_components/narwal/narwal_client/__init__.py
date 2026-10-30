@@ -4,6 +4,7 @@ from .client import (
     NarwalAuthenticationError,
     NarwalClient,
     NarwalCommandError,
+    NarwalCommandTimeoutError,
     NarwalConnectionError,
 )
 from .cloud_api import (
@@ -22,6 +23,7 @@ from .const import (
     DryMopStrength,
     FanLevel,
     MopHumidity,
+    ServiceResult,
     WorkingStatus,
 )
 from .models import (
@@ -44,12 +46,14 @@ __all__ = [
     "CloudAccount",
     "CloudDevice",
     "NarwalCommandError",
+    "NarwalCommandTimeoutError",
     "NarwalConnectionError",
     "NarwalAuthenticationError",
     "NarwalState",
     "NarwalNotification",
     "CommandResponse",
     "CommandResult",
+    "ServiceResult",
     "CustomCleanStrategy",
     "CleanMode",
     "CleanTaskType",

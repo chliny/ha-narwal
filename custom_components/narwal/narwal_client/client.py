@@ -40,7 +40,6 @@ from .const import (
     TOPIC_CMD_SET_CONFIG,
     TOPIC_CMD_SET_CUSTOM_VOICE,
     TOPIC_CMD_SET_FAN_LEVEL,
-    TOPIC_CMD_SET_LED,
     TOPIC_CMD_SET_MOP_HUMIDITY,
     TOPIC_CMD_START_CLEAN,
     TOPIC_CMD_START_CLEAN_PLAN,
@@ -62,7 +61,7 @@ from .map_renderer import (
     map_dimensions_are_safe,
     map_payload_is_valid,
 )
-from .models import CommandResponse, DeviceInfo, MapData, MapDisplayData, NarwalState
+from .models import CommandResponse, DeviceInfo, MapData, MapDisplayData, NarwalState, _to_float64
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,13 +78,17 @@ class NarwalCommandError(Exception):
     """Raised when a robot command fails or times out."""
 
 
+class NarwalCommandTimeoutError(NarwalCommandError):
+    """Raised when a command receives no reply within its deadline."""
+
+
 class NarwalClient:
     """Transport base containing Narwal cloud commands and state parsing."""
 
     _ZONE_TYPE_ROOM = 1
     _ZONE_TYPE_WHOLE_MAP = 3
-    # The robot answers a start request quickly; a silent attempt is retried
-    # with the next payload variant after a short pause.
+    # Retry another mode only after an explicit rejection. A silent attempt
+    # might already be running, so do not send a second start command.
     _START_ATTEMPT_TIMEOUT = 5.0
     _START_RETRY_DELAY = 0.8
     _START_TOPIC_LABELS = {
@@ -147,8 +150,8 @@ class NarwalClient:
                 "46": (dict, list),
                 "47": int,
             },
-            "upgrade/upgrade_status": {"4": int, "7": (bytes, str), "8": (bytes, str)},
-            "status/download_status": {"1": int},
+            "upgrade/upgrade_status": {"2": int, "4": int, "7": (bytes, str), "8": (bytes, str)},
+            "status/download_status": {"1": int, "3": int},
             "map/display_map": {"1": dict, "5": dict, "7": dict, "8": dict},
             "status/time_line_status": {"1": (dict, list)},
         }
@@ -217,16 +220,16 @@ class NarwalClient:
     def _observe_map_id(self, value: Any) -> None:
         """Observe RobotBaseStatus.mapId (field 30), including App switches.
 
-        Compare against the previously reported ID, not just the cached map's
-        ID: on models where these two IDs are not interchangeable, comparing
-        against the cached value would invalidate the map on every broadcast.
+        This only invalidates the cached map. ``current_map_id`` is not changed
+        by broadcasts, since the base-status ID may refer to a different map
+        domain. Room-start requests separately select an ID via _active_map_id.
+        Compare reported IDs to avoid repeated invalidation when they differ.
         """
         if type(value) is not int or value <= 0 or value == self._observed_map_id:
             return
         self._observed_map_id = value
         if value == self.state.current_map_id:
             return
-        self.state.current_map_id = value
         self.state.map_data = None  # Never show the previous map's room IDs.
         self.state.map_display_data = None
         self._reported_map_version = None
@@ -316,13 +319,19 @@ class NarwalClient:
         return await self.send_command(TOPIC_CMD_YELL)
 
     async def start(self, **kwargs: Any) -> CommandResponse:
-        """Start whole-map cleaning, trying Freo Mind before other modes.
+        """Start cleaning, preferring a built-in Freo Mind plan when available.
 
-        Firmware differs in which endpoint and payload shape it accepts, so
-        every supported variant is attempted in order and only the first
-        accepted command ends the sequence. The last rejection is returned and
-        transport failures surface as ``NarwalCommandError`` so Home Assistant
-        reports one failure after the whole sequence.
+        The select entity's chosen plan is only used by the explicit plan
+        button. After a built-in plan is rejected, try direct Freo Mind and
+        then sweep-and-mop on the model's start endpoint. Saved-plan metadata
+        does not prove its room scope, which is determined by the device.
+
+        Firmware differs in which payload shape it accepts, so the next variant
+        is tried after an explicit rejection. A missing reply is ambiguous -
+        the robot may already be cleaning - so it stops the chain and surfaces
+        the transport error instead of risking a second task. Before reporting
+        that error, do not infer success from a status query: sleeping firmware
+        can return a stale task from a previous cleaning session.
         """
         del kwargs
         attempts = self._start_attempts()
@@ -332,7 +341,6 @@ class NarwalClient:
             ", ".join(label for label, _topic, _payload in attempts),
         )
         last_response: CommandResponse | None = None
-        last_error: NarwalCommandError | NarwalConnectionError | None = None
         for index, (label, topic, payload) in enumerate(attempts, start=1):
             if index > 1:
                 await asyncio.sleep(self._START_RETRY_DELAY)
@@ -346,15 +354,17 @@ class NarwalClient:
                 # New credentials are required before any variant can succeed.
                 raise
             except (NarwalCommandError, NarwalConnectionError) as err:
-                last_error = err
+                # No reply is ambiguous: the robot may have accepted this task.
+                # Sending another variant could start a second, different clean.
+                # Only an explicit rejection justifies trying the next variant.
                 _LOGGER.warning(
-                    "Start attempt %d/%d (%s) got no usable reply: %s",
+                    "Start attempt %d/%d (%s) got no usable reply; stopping: %s",
                     index,
                     len(attempts),
                     label,
                     err,
                 )
-                continue
+                raise
             if response.success:
                 _LOGGER.info("Start accepted by attempt %d/%d (%s)", index, len(attempts), label)
                 return response
@@ -379,16 +389,14 @@ class NarwalClient:
 
         if last_response is not None:
             return last_response
-        if last_error is not None:
-            raise last_error
         return CommandResponse(result_code=CommandResult.GENERAL_FAILED)
 
     def _start_attempts(self) -> list[tuple[str, str, bytes]]:
         """Return the ordered start variants: label, topic and payload.
 
-        Freo Mind is tried on every endpoint this model's App supports before
-        any other mode, so the preferred mode wins whenever the firmware can
-        accept it.  The endpoint order follows the App's DeviceModel branch.
+        Try an available saved plan first, then the model's direct CleanTask
+        endpoint in Freo Mind mode, and finally sweep-and-mop after an explicit
+        rejection. The saved plan's room scope is determined by the device.
         """
         freo_mind = self._build_clean_payload_v2(
             clean_mode=CleanMode.SMART,
@@ -396,49 +404,83 @@ class NarwalClient:
             enable_smart_mode=True,
         )
         sweep_mop = self._build_clean_payload_v2()
-        freo_mind_easy = self._build_easy_clean_payload(CleanMode.SMART)
-        sweep_mop_easy = self._build_easy_clean_payload(CleanMode.SWEEP_MOP_SYNC)
-        endpoints = self._start_endpoint_order()
+        freo_mind_easy = self._convert_clean_to_easy_payload(freo_mind)
+        sweep_mop_easy = self._convert_clean_to_easy_payload(sweep_mop)
+        # The App sends exactly one start endpoint per DeviceModel: ax3/J3 uses
+        # StartEasyClean, every other model StartClean. The other endpoint is
+        # not a fallback - on the observed J3 it never answers at all, which
+        # only delayed the real rejection and hid its result code.
+        (topic,) = self._start_endpoint_order()
         attempts: list[tuple[str, str, bytes]] = []
+        plan = self._start_plan_payload()
+        if plan is not None:
+            attempts.append(("saved clean plan", TOPIC_CMD_START_CLEAN_PLAN, plan))
         for mode_name, clean_task, easy_payload in (
             ("Freo Mind", freo_mind, freo_mind_easy),
             ("sweep and mop", sweep_mop, sweep_mop_easy),
         ):
-            for topic in endpoints:
-                payload = easy_payload if topic == TOPIC_CMD_EASY_CLEAN else clean_task
-                attempts.append(
-                    (f"{mode_name} on {self._START_TOPIC_LABELS[topic]}", topic, payload)
-                )
+            payload = easy_payload if topic == TOPIC_CMD_EASY_CLEAN else clean_task
+            attempts.append((f"{mode_name} on {self._START_TOPIC_LABELS[topic]}", topic, payload))
         return attempts
 
-    def _start_endpoint_order(self) -> tuple[str, ...]:
-        """Prefer the model's start endpoint, never a saved-plan command.
+    def _active_map_id(self) -> int | None:
+        """Select a map ID for room starts, preferring base-status field 30.
 
-        clean/plan/start expects a plan ID, not a CleanTask. A saved plan may
-        retain an old subset of rooms and cannot guarantee whole-home scope.
-        Keep it exclusively for explicit start_clean_plan calls.
+        The static-map ID is used if no base-status ID has been seen. These IDs
+        can differ; room starts use this value, while automatic plan selection
+        and direct whole-home payloads use the cached static-map ID.
+        """
+        reported = self.state.raw_base_status.get("30")
+        if type(reported) is int and reported > 0:
+            return reported
+        cached = self.state.current_map_id
+        if type(cached) is int and cached > 0:
+            return cached
+        return None
+
+    def _start_plan_payload(self) -> bytes | None:
+        """Build an eligible built-in Freo Mind plan request for this map.
+
+        The selected plan belongs to the explicit plan button, not to default
+        start: it may use another mode or cover only selected rooms. Saved-plan
+        metadata does not establish room scope even for a smart plan.
+        """
+        current_map = self.state.current_map_id
+        if type(current_map) is not int or current_map <= 0:
+            return None
+        for plan in self.state.clean_plans:
+            plan_id = plan.get("id")
+            if type(plan_id) is not int or plan_id <= 0:
+                continue
+            if self._as_int(plan.get("map_id")) != current_map:
+                continue
+            if plan.get("is_custom"):
+                continue
+            if plan.get("clean_mode") != int(CleanMode.SMART):
+                continue
+            # The observed App saved-plan start carries only planId; the plan
+            # determines its own map and room scope.
+            return self._encode_varint_field(1, plan_id)
+        return None
+
+    def _start_endpoint_order(self) -> tuple[str, ...]:
+        """Return the single CleanTask start endpoint the App uses per model.
+
+        ax3/J3 converts the CleanTask to StartEasyClean; every other model uses
+        StartClean. The other endpoint is not a fallback: on the tested J3 it
+        never replied, which only delayed the real rejection.
+
+        clean/plan/start is tried first only when an eligible built-in smart
+        plan exists for the current static map.
         """
         if self.product_id in EASY_CLEAN_PRODUCT_KEYS:  # ax3 / J3
-            return (TOPIC_CMD_EASY_CLEAN, TOPIC_CMD_START_CLEAN)
-        return (TOPIC_CMD_START_CLEAN, TOPIC_CMD_EASY_CLEAN)
+            return (TOPIC_CMD_EASY_CLEAN,)
+        return (TOPIC_CMD_START_CLEAN,)
 
     def _build_easy_clean_payload(self, clean_mode: int) -> bytes:
-        """Build StartEasyClean.Request with an explicit whole-house scope.
-
-        Field 3 is repeated CleanAreaOption. Its field 2 (cleanZoneType=3)
-        selects WHOLE_HOUSE, distinct from field 1 (zoneId). Omitting the
-        options leaves the scope unspecified, so a mode alone cannot guarantee
-        all rooms after the App splits/merges them. Do not copy cached room IDs
-        or a previous task's selection into a default whole-home start.
-        """
-        map_id = self.state.current_map_id
-        if type(map_id) is not int or map_id <= 0:
-            map_id = 1
-        whole_house = self._encode_varint_field(2, 3)  # CleanZoneType.WHOLE_HOUSE
-        return (
-            self._encode_varint_field(1, int(clean_mode))
-            + self._encode_varint_field(2, map_id)
-            + self._encode_bytes_field(3, whole_house)
+        """Build whole-house StartEasyClean with the App's mode-specific options."""
+        return self._convert_clean_to_easy_payload(
+            self._build_clean_payload_v2(clean_mode=clean_mode)
         )
 
     def _build_clean_payload_v2(
@@ -446,7 +488,7 @@ class NarwalClient:
         room_ids: list[int] | None = None,
         suction: int | None = None,
         mop_humidity: int | None = None,
-        clean_mode: int = 3,
+        clean_mode: int = CleanMode.SWEEP_MOP_SYNC,
         task_type: int | None = CleanTaskType.SHORTCUT,
         enable_smart_mode: bool = False,
     ) -> bytes:
@@ -459,10 +501,18 @@ class NarwalClient:
         """
         import blackboxprotobuf
 
+        if clean_mode == CleanMode.SMART:
+            enable_smart_mode = True
+        if enable_smart_mode:
+            task_type = None
         if suction is None:
             reported_fan = self.state.raw_base_status.get("26")
             # App CleanParam defines six FanLevel values, beyond our four UI choices.
-            suction = reported_fan if type(reported_fan) is int and 0 <= reported_fan <= 5 else 3
+            suction = (
+                reported_fan
+                if type(reported_fan) is int and 0 <= reported_fan <= 5
+                else int(FanLevel.NORMAL)
+            )
         if mop_humidity is None:
             reported_humidity = self.state.raw_base_status.get("29")
             mop_humidity = (
@@ -480,7 +530,21 @@ class NarwalClient:
             "4": mop_humidity,
         }
         if enable_smart_mode:
+            # App J3 room-smart capture carries normal mop strength explicitly.
+            clean_params["3"] = 1  # MopStrengthLevel.NORMAL
             clean_params["9"] = 1  # CleanParam.enableSmartMode
+        # The App converts these mode-specific counts into area cleanCount.
+        # Omitting them serializes zero passes instead of a one-pass clean.
+        if enable_smart_mode or clean_mode == CleanMode.SWEEP_MOP_SYNC:
+            clean_params["7"] = 1  # sweepMopSyncTime
+        elif clean_mode == CleanMode.SWEEP:
+            clean_params["5"] = 1  # sweepTime
+        elif clean_mode == CleanMode.MOP:
+            clean_params["6"] = 1  # mopTime
+        elif clean_mode == CleanMode.SWEEP_THEN_MOP:
+            clean_params["5"] = clean_params["6"] = 1
+        else:
+            raise ValueError("Unsupported Narwal clean mode")
         if room_ids:
             clean_items = [
                 {
@@ -515,7 +579,11 @@ class NarwalClient:
                     "message_typedef": {
                         "1": {"type": "int"},
                         "2": {"type": "int"},
+                        "3": {"type": "int"},
                         "4": {"type": "int"},
+                        "5": {"type": "uint"},
+                        "6": {"type": "uint"},
+                        "7": {"type": "uint"},
                         "9": {"type": "int"},
                     },
                 },
@@ -524,7 +592,9 @@ class NarwalClient:
         }
         map_id = self.state.current_map_id
         if type(map_id) is not int or map_id <= 0:
-            map_id = 1
+            raise NarwalCommandError(
+                "Cannot start cleaning because the active map ID is unavailable"
+            )
         clean_task: dict[str | int, Any] = {
             "1": map_id,
             "2": clean_items if len(clean_items) > 1 else clean_items[0],
@@ -546,19 +616,139 @@ class NarwalClient:
         }
         return blackboxprotobuf.encode_message(message, typedef)
 
+    def _convert_clean_to_easy_payload(self, clean_request: bytes) -> bytes:
+        """Convert our homogeneous CleanTask as the ax3 App does.
+
+        CleanAreaOption keeps each zone's ID/type, then carries the mode's
+        nested area option (sweep=4, mop=5, sync/smart=6, sweep-then-mop=7).
+        Counts and humidity are copied, not omitted or mistaken for strength.
+        For WHOLE_MAP the App duplicates the whole-house option with each
+        room ID from the currently cached map, without changing its zone type.
+        """
+        task = self._decode_protobuf(clean_request)["1"]
+        items = task["2"]
+        if isinstance(items, dict):
+            items = [items]
+        smart = bool(task.get("3", {}).get("1"))
+        mode = CleanMode.SMART if smart else items[0]["2"]["1"]
+        payload = self._encode_varint_field(1, int(mode))
+        payload += self._encode_varint_field(2, task["1"])
+        for item in items:
+            zone, params = item["1"], item["2"]
+            area = self._encode_varint_field(2, zone["1"])
+            if zone["1"] == self._ZONE_TYPE_ROOM:
+                area = self._encode_varint_field(1, zone["2"]) + area
+            # The App clamps FanLevel.SUPER (5) to SweepFanLevel.STRONG (3).
+            fan = params["2"] if 0 <= params["2"] <= 4 else 3
+            humidity = params["4"]
+            if mode == CleanMode.SWEEP:
+                option_field = 4
+                option = self._encode_varint_field(1, fan)
+                option += self._encode_varint_field(2, params["5"])
+            elif mode == CleanMode.MOP:
+                option_field = 5
+                option = self._encode_varint_field(2, humidity)
+                option += self._encode_varint_field(3, params["6"])
+            elif mode in (CleanMode.SMART, CleanMode.SWEEP_MOP_SYNC):
+                option_field = 6
+                option = self._encode_varint_field(1, fan)
+                if "3" in params:
+                    option += self._encode_varint_field(2, params["3"])
+                option += self._encode_varint_field(3, humidity)
+                option += self._encode_varint_field(4, 1 if smart else params["7"])
+            elif mode == CleanMode.SWEEP_THEN_MOP:
+                option_field = 7
+                sweep = self._encode_varint_field(1, fan)
+                sweep += self._encode_varint_field(2, params["5"])
+                mop = self._encode_varint_field(2, humidity)
+                mop += self._encode_varint_field(3, params["6"])
+                option = self._encode_bytes_field(1, sweep) + self._encode_bytes_field(2, mop)
+            else:
+                raise ValueError("Unsupported Narwal easy-clean mode")
+            area += self._encode_bytes_field(option_field, option)
+            cached_map = self.state.map_data
+            cached_id = cached_map.raw.get("1") if cached_map is not None else None
+            if (
+                zone["1"] == self._ZONE_TYPE_WHOLE_MAP
+                and cached_map is not None
+                and not self.map_refresh_needed
+                and (cached_id is None or cached_id == task["1"])
+            ):
+                # The App takes allRoomIds from its cached static map, then
+                # clones this WHOLE_HOUSE option once per room. A stale cache
+                # can still miss App-side edits; event refresh does not prove
+                # that every external edit has been observed.
+                room_ids = list(
+                    dict.fromkeys(
+                        room.room_id
+                        for room in cached_map.rooms
+                        if type(room.room_id) is int and room.room_id > 0
+                    )
+                )
+                if room_ids:
+                    for room_id in room_ids:
+                        payload += self._encode_bytes_field(
+                            3, self._encode_varint_field(1, room_id) + area
+                        )
+                    continue
+            payload += self._encode_bytes_field(3, area)
+        return payload
+
     async def start_rooms(self, room_ids: list[int]) -> CommandResponse:
-        """Start cleaning in the selected rooms."""
-        if not room_ids:
-            return await self.start()
-        return await self.send_command(
-            TOPIC_CMD_START_CLEAN,
-            payload=self._build_clean_payload_v2(room_ids),
-            timeout=10.0,
+        """Start only selected rooms, using the model's App endpoint.
+
+        Room cleaning uses Freo Mind (鲸灵托管) with the selected rooms, the
+        same mode the App offers for a room selection: the request carries
+        cleanMode=SMART and one ROOM CleanAreaOption per selected room. No
+        saved plan is created or modified. A timeout is not a rejection: the
+        robot may already be cleaning, so no duplicate task is sent.
+        """
+        if not room_ids or any(type(room_id) is not int or room_id <= 0 for room_id in room_ids):
+            raise ValueError("Select at least one positive integer Narwal room ID")
+        room_ids = list(dict.fromkeys(room_ids))
+        active_map = self._active_map_id()
+        if active_map is not None:
+            self.state.current_map_id = active_map
+        payload = self._build_clean_payload_v2(room_ids, clean_mode=CleanMode.SMART)
+        topic = self._start_endpoint_order()[0]
+        if topic == TOPIC_CMD_EASY_CLEAN:
+            payload = self._convert_clean_to_easy_payload(payload)
+        cached_rooms = {
+            room.room_id: room.display_name
+            for room in (self.state.map_data.rooms if self.state.map_data else [])
+            if room.room_id > 0
+        }
+        _LOGGER.info(
+            "Room clean request: product=%s endpoint=%s map=%s (base-status map=%s) rooms=%s"
+            " selected=%s cached_rooms=%s",
+            self.product_id,
+            topic,
+            self.state.current_map_id,
+            self.state.raw_base_status.get("30"),
+            room_ids,
+            {room_id: cached_rooms.get(room_id, "<not in cached map>") for room_id in room_ids},
+            sorted(cached_rooms.items()),
         )
+        try:
+            return await self.send_command(topic, payload=payload, timeout=10.0)
+        except (NarwalCommandError, NarwalConnectionError) as err:
+            _LOGGER.warning(
+                "Room clean request failed: product=%s endpoint=%s map=%s rooms=%s error=%s",
+                self.product_id,
+                topic,
+                self.state.current_map_id,
+                room_ids,
+                type(err).__name__,
+            )
+            raise
 
     async def start_easy_clean(self) -> CommandResponse:
-        """Start quick cleaning."""
-        return await self.send_command(TOPIC_CMD_EASY_CLEAN)
+        """Start explicit whole-house Freo Mind using the App request schema."""
+        return await self.send_command(
+            TOPIC_CMD_EASY_CLEAN,
+            payload=self._build_easy_clean_payload(CleanMode.SMART),
+            timeout=10.0,
+        )
 
     async def pause(self) -> CommandResponse:
         """Pause the active task."""
@@ -869,15 +1059,17 @@ class NarwalClient:
             "8": "health_state",
             "9": "rated_capacity",
         }
-        details = {
-            name: self._plain_value(response.data[field])
-            for field, name in names.items()
-            if (
-                isinstance(response.data.get(field), (bytes, str))
-                if field == "3"
-                else type(response.data.get(field)) is int
-            )
-        }
+        details: dict[str, Any] = {}
+        for field, name in names.items():
+            value = response.data.get(field)
+            if field == "3" and isinstance(value, (bytes, str)):
+                details[name] = self._plain_value(value)
+            elif field in {"5", "6", "7"}:
+                decoded = _to_float64(value)
+                if decoded is not None:
+                    details[name] = decoded
+            elif type(value) is int:
+                details[name] = value
         # BatteryInfo.Response has no ServiceResult field; field 1 is capacity.
         if details:
             self.state.battery_details = details
@@ -966,7 +1158,11 @@ class NarwalClient:
         return response
 
     async def start_clean_plan(self, plan_id: int) -> CommandResponse:
-        """Start one saved plan using StartWithPlan.Request.planId."""
+        """Start one saved plan using StartWithPlan.Request.planId.
+
+        The observed App saved-plan request also carries only planId. The
+        saved plan, not this request, determines which rooms are cleaned.
+        """
         return await self.send_command(
             TOPIC_CMD_START_CLEAN_PLAN,
             self._encode_varint_field(1, int(plan_id)),
@@ -1044,11 +1240,11 @@ class NarwalClient:
         return response.data.get("2") if response.result_code == CommandResult.SUCCESS else None
 
     async def set_led(self, on: bool) -> None:
-        """Turn the camera fill light on or off."""
-        try:
-            await self.send_command(
-                TOPIC_CMD_SET_LED,
-                payload=b"\x08\x01" if on else b"\x08\x00",
-            )
-        except NarwalCommandError, NarwalConnectionError:
-            _LOGGER.debug("Unable to set Narwal camera LED")
+        """Reject an unverified fill-light control instead of sending invalid protobuf.
+
+        developer/led_control expects nested LedFreeControl or StationLed
+        messages, not a boolean. Its relationship to a camera fill light is
+        unverified; do not guess a device command.
+        """
+        del on
+        raise NarwalCommandError("Camera fill-light control is not supported")

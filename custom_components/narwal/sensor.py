@@ -233,13 +233,18 @@ class NarwalChargingStateSensor(NarwalEntity, SensorEntity):
     def native_value(self) -> str | None:
         """Return charging state.
 
-        Returns None (unavailable) when not docked.
+        Unplugged is not charging. If the device explicitly reports a charging
+        status, its meanings are not all established, so avoid inferring charging
+        from dock presence or battery percentage. Older firmware that omits the
+        field keeps the previous dock/SOC heuristic as a compatibility fallback.
         """
         state = self.coordinator.data
         if state is None:
             return None
         if not state.is_docked:
             return "not_charging"
+        if state.charging_status_reported:
+            return None
         if state.battery_level >= 100:
             return "fully_charged"
         return "charging"

@@ -314,7 +314,13 @@ class NarwalWashAndDryMopSwitch(NarwalEntity, SwitchEntity):
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: object) -> None:
-        """End the station wash-and-dry cycle."""
+        """End wash-and-dry only when it is the reported active task.
+
+        The underlying force-end command is not scoped to wash-and-dry. Sending
+        it while another task is active could stop unrelated cleaning.
+        """
+        if not self.is_on:
+            return
         response = await self._async_await_command(
             self.coordinator.client.end_wash_and_dry_mop(),
             "end wash and dry mop",

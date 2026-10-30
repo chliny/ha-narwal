@@ -20,7 +20,7 @@ def _int_or_default(value: Any, default: int = 0) -> int:
         return default
     try:
         return int(value)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return default
 
 
@@ -39,22 +39,21 @@ class RoomInfo:
 
     Fields from get_map / get_editable_map field 2.12:
       field 1: room_id (matches pixel value >> 8 in map grid)
-      field 2: room_sub_type — ROOM_TYPE protocol enum (0=unspecified,
-               1=main bedroom, 2=secondary room, 3=living room, 4=kitchen,
-               5=study, 6=bathroom, 7=dining room, 8=corridor, 9=balcony,
-               10=utility room, 11=cloak room, 12=nursery, 13=recreation,
-               14=shower room, 15=other)
+      field 2: room_sub_type — ROOM_TYPE protocol enum (see ROOM_TYPE_NAMES)
       field 3: user-assigned name (UTF-8, empty if not named by user)
-      field 4: category (1=room, 2=utility/small space)
-      field 8: instance_index (1-based, for numbering duplicates: Bathroom 1, 2, 3...)
+      field 4: FloorTexture enum (not a room/utility category)
+      field 8: roomTypeId; legacy numbering behavior is retained pending
+               model-specific naming-path evidence
     """
 
     room_id: int = 0
     name: str = ""  # user-assigned name from field 3
     room_sub_type: int = 0  # ROOM_TYPE enum from field 2
-    category: int = 0  # 1=room, 2=utility (field 4)
-    instance_index: int = 0  # numbering for duplicates (field 8)
+    category: int = 0  # Deprecated compatibility field; not populated from texture.
+    instance_index: int = 0  # Legacy explicit numbering; not populated from roomTypeId.
     model_key: str = ""  # product_key — selects per-model name overrides
+    floor_texture: int = 0  # FloorTexture enum from field 4; preserve unknown values.
+    room_type_id: int = 0  # Raw field 8; its naming/numbering semantics are unverified.
 
     # ROOM_TYPE enum → default display name
     ROOM_TYPE_NAMES: ClassVar[dict[int, str]] = {
@@ -63,16 +62,16 @@ class RoomInfo:
         2: "Secondary Bedroom",
         3: "Living Room",
         4: "Kitchen",
-        5: "Study",
+        5: "Shower Room",
         6: "Bathroom",
-        7: "Dining Room",
-        8: "Corridor",
-        9: "Balcony",
-        10: "Utility Room",
-        11: "Cloak Room",
+        7: "Balcony",
+        8: "Dining Room",
+        9: "Cloak Room",
+        10: "Corridor",
+        11: "Study",
         12: "Nursery",
         13: "Recreation Room",
-        14: "Shower Room",
+        14: "Utility Room",
         15: "Other",
     }
 
@@ -90,9 +89,9 @@ class RoomInfo:
     def display_name(self) -> str:
         """Return user name if set, otherwise generate default from ROOM_TYPE enum.
 
-        Matches Narwal app behavior: unnamed rooms show their type name
-        with an instance number suffix for duplicates (e.g. "Bathroom 2").
-        Per-model overrides apply where Narwal renamed sub-types (e.g. Flow 2
+        Unnamed rooms use the type name. A suffix is used only if a legacy
+        caller explicitly provides instance_index; map field 8 alone does not
+        establish numbering semantics. Per-model overrides apply (e.g. Flow 2
         renames sub_type 1 → "Master Bedroom" vs Flow 1's "Primary Bedroom").
         """
         if self.name:
@@ -275,7 +274,7 @@ class MapData:
     resolution: int = 0
     rooms: list[RoomInfo] = field(default_factory=list)
     compressed_map: bytes = b""
-    area: int = 0
+    area: int = 0  # Deprecated compatibility field; no confirmed map-area source.
     created_at: int = 0
     dock_x: float | None = None  # dock position in grid coordinates
     dock_y: float | None = None
@@ -283,6 +282,7 @@ class MapData:
     origin_y: int = 0  # Legacy renderer Y offset from border.bottom (field 2.6.1)
     obstacles: list[ObstacleInfo] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+    edit_version: int = 0  # StaticMapPayload field 33, not an area measurement.
 
     @classmethod
     def from_response(cls, decoded: dict[str, Any], product_key: str = "") -> MapData:
@@ -318,8 +318,8 @@ class MapData:
                         room_id=_int_or_default(room.get("1")),
                         name=name,
                         room_sub_type=_int_or_default(room.get("2")),
-                        category=_int_or_default(room.get("4")),
-                        instance_index=_int_or_default(room.get("8")),
+                        floor_texture=_int_or_default(room.get("4")),
+                        room_type_id=_int_or_default(room.get("8")),
                         model_key=product_key,
                     )
                 )
@@ -371,7 +371,7 @@ class MapData:
             resolution=resolution,
             rooms=rooms,
             compressed_map=compressed if isinstance(compressed, bytes) else b"",
-            area=_int_or_default(payload.get("33")),
+            edit_version=_int_or_default(payload.get("33")),
             created_at=_int_or_default(payload.get("34")),
             dock_x=dock_x,
             dock_y=dock_y,
@@ -582,7 +582,9 @@ class NarwalState:
     # Core status
     working_status: WorkingStatus = WorkingStatus.UNKNOWN
     battery_level: int = 0  # real-time SOC from field 2 (float32)
-    battery_health: int = 0  # static design capacity from field 38 (always 100)
+    battery_health: int = 0  # Deprecated: base-status field 38 is not battery health.
+    curing_agent_consumption_percent: int | None = None
+    station_bag_health_reset_time: int | None = None
     firmware_version: str = ""
     firmware_target: str = ""
     firmware_update_info: dict[str, Any] = field(default_factory=dict)
@@ -594,6 +596,7 @@ class NarwalState:
     # Cloud account metadata.
     consumables: dict[str, ConsumableInfo] = field(default_factory=dict)
     notifications: list[NarwalNotification] = field(default_factory=list)
+    notifications_loaded: bool = False  # A notification endpoint has succeeded at least once.
     latest_task_record: dict[str, Any] | None = None
     task_records: list[dict[str, Any]] = field(default_factory=list)
     task_record_details: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -642,8 +645,10 @@ class NarwalState:
 
     # Vision obstacles (camera-detected transient objects during cleaning)
     # Download/upgrade status
-    download_status: int = 0
-    upgrade_status_code: int = 0
+    download_status: int = 0  # DownloadStatus.state (field 3)
+    download_type: int = 0  # DownloadStatus.type (field 1)
+    upgrade_status_code: int = 0  # OTAUpgradeStatus.status (field 2)
+    upgrade_stage: int = 0  # OTAUpgradeStatus.stage (field 4)
 
     # Pause overlay.
     is_paused: bool = False
@@ -679,6 +684,7 @@ class NarwalState:
     # ChargingStatus enum from top-level field 47. It describes charging state
     # and must not be treated as independent proof that the robot is docked.
     charging_status: int = 0
+    charging_status_reported: bool = False
 
     # RobotBaseStatus field 1: repeated ErrorCode, sub-field 1 = identityCode.
     # Full base-status snapshots replace rather than accumulate active errors.
@@ -712,8 +718,10 @@ class NarwalState:
         if self.working_status == WorkingStatus.IDLE:
             if self.idle_status in (1, 6):
                 return True
-            if self.idle_status in (2, 3, 4, 5, 7):
+            if self.idle_status in (2, 7):
                 return False
+            # 3/4/5 indicate an uninstalled cleaning module, not location.
+            # Let the station-contact signal decide in those states.
         # For idle, unknown, or unmapped states, check top-level dock signals.
         return self.station_contact_type in {2, 3}
 
@@ -770,7 +778,7 @@ class NarwalState:
         Battery (confirmed via 35-min monitor capture):
           Field 2  = real-time battery as IEEE 754 float32
                      (1118175232 → 83.0%, matching app ~84%)
-          Field 38 = static battery health (always 100; design capacity)
+          Field 38 = curing-agent consumption percentage, not battery health.
 
         Field 3 is RobotTaskStatus. Its sub-field 1 is TaskType, sub-field 2
         is pauseStatus, and task-specific sub-states start at sub-field 3.
@@ -782,7 +790,8 @@ class NarwalState:
           Field 11 = StationContactType (validated as a dock contact signal)
           Field 47 = ChargingStatus (not an independent dock signal)
 
-        Note: field 32 mirrors field 3 exactly (redundant).
+        Field 32 is a repeated task list; on some observed devices it mirrored
+        field 3, but the protocol does not guarantee that for all models.
         """
         self.raw_base_status = decoded
         errors = decoded.get("1", [])
@@ -811,13 +820,16 @@ class NarwalState:
         self.dock_presence = 0
         self.station_contact_type = 0
         self.charging_status = 0
+        self.charging_status_reported = False
 
         # Field 11 = StationContactType (2/3=docked, 1=undocked).
         if "11" in decoded:
             self.station_contact_type = _int_or_default(decoded["11"])
-        # Field 47 = ChargingStatus enum; retained for diagnostics only.
-        if "47" in decoded:
-            self.charging_status = _int_or_default(decoded["47"])
+        # Field 47 = ChargingStatus enum. Preserve presence separately; a
+        # later battery-only poll must not discard the complete status.
+        if type(decoded.get("47")) is int:
+            self.charging_status = decoded["47"]
+            self.charging_status_reported = True
         # Field 3 is a RobotTaskStatus nested message: {1: task_type, ...}
         # Sub-field layout differs across firmware versions. Fields 3 onward
         # are task-specific status enums, not independent dock indicators.
@@ -908,19 +920,7 @@ class NarwalState:
             bat = _to_float32(decoded["2"])
             if bat is not None and math.isfinite(bat) and 0 <= bat <= 100:
                 self.battery_level = round(bat)
-        if "38" in decoded:
-            # Field 38 = static battery health (always 100, design capacity)
-            self.battery_health = _int_or_default(decoded["38"], self.battery_health)
-        if "36" in decoded:
-            self.timestamp = _int_or_default(decoded["36"], self.timestamp)
-        if "13" in decoded:
-            raw = decoded["13"]
-            if isinstance(raw, bytes):
-                self.session_id = raw.decode("utf-8", errors="replace")
-            else:
-                self.session_id = str(raw)
-                if self.session_id.startswith("b'"):
-                    self.session_id = self.session_id[2:-1]
+        self._update_base_maintenance_fields(decoded)
 
     def update_battery_from_base_status(self, decoded: dict[str, Any]) -> None:
         """Update ONLY hardware-sampled fields from a base_status response.
@@ -935,10 +935,14 @@ class NarwalState:
             bat = _to_float32(decoded["2"])
             if bat is not None and math.isfinite(bat) and 0 <= bat <= 100:
                 self.battery_level = round(bat)
-        if "38" in decoded:
-            self.battery_health = _int_or_default(decoded["38"], self.battery_health)
-        if "36" in decoded:
-            self.timestamp = _int_or_default(decoded["36"], self.timestamp)
+        self._update_base_maintenance_fields(decoded)
+
+    def _update_base_maintenance_fields(self, decoded: dict[str, Any]) -> None:
+        """Read confirmed maintenance fields without exposing bound UUID."""
+        if type(decoded.get("38")) is int:
+            self.curing_agent_consumption_percent = decoded["38"]
+        if type(decoded.get("36")) is int:
+            self.station_bag_health_reset_time = decoded["36"]
 
     def update_from_upgrade_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded upgrade_status message."""
@@ -958,10 +962,14 @@ class NarwalState:
                 self.firmware_target = str(raw)
                 if self.firmware_target.startswith("b'"):
                     self.firmware_target = self.firmware_target[2:-1]
-        if "4" in decoded:
-            self.upgrade_status_code = _int_or_default(decoded["4"], self.upgrade_status_code)
+        if type(decoded.get("2")) is int:
+            self.upgrade_status_code = decoded["2"]
+        if type(decoded.get("4")) is int:
+            self.upgrade_stage = decoded["4"]
 
     def update_from_download_status(self, decoded: dict[str, Any]) -> None:
-        """Update state from a decoded download_status message."""
-        if "1" in decoded:
-            self.download_status = _int_or_default(decoded["1"], self.download_status)
+        """Update download type and state from separate App protobuf fields."""
+        if type(decoded.get("1")) is int:
+            self.download_type = decoded["1"]
+        if type(decoded.get("3")) is int:
+            self.download_status = decoded["3"]

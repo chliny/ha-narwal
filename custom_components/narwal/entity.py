@@ -18,6 +18,7 @@ from .coordinator import NarwalCoordinator
 from .narwal_client import (
     CommandResponse,
     NarwalCommandError,
+    NarwalCommandTimeoutError,
     NarwalConnectionError,
 )
 
@@ -64,10 +65,21 @@ class NarwalEntity(CoordinatorEntity[NarwalCoordinator]):
         """Convert transport failures into a safe Home Assistant service error."""
         try:
             return await command
-        except (NarwalCommandError, NarwalConnectionError) as err:
+        except NarwalCommandTimeoutError as err:
             raise HomeAssistantError(
-                f"Narwal {action} failed because the robot did not respond; "
-                "verify that it is online in the Narwal app"
+                f"Narwal {action} timed out waiting for a command reply; "
+                "the robot can still be online in the app. "
+                "Check the integration logs for the attempted command endpoints"
+            ) from err
+        except NarwalCommandError as err:
+            raise HomeAssistantError(
+                f"Narwal {action} failed because no usable command response was received; "
+                "check the integration logs for protocol errors"
+            ) from err
+        except NarwalConnectionError as err:
+            raise HomeAssistantError(
+                f"Narwal {action} failed: the integration's cloud connection is unavailable; "
+                "check the integration connection even if the robot is online in the app"
             ) from err
 
     @property

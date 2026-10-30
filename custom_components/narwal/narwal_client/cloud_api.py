@@ -533,7 +533,7 @@ class NarwalCloudApi:
             device_id=device_id,
             product_id=product_id,
             # The app accepts both business codes for this response model.
-            accepted_codes=frozenset({"0", "400"}),
+            accepted_codes=frozenset({"0", "200"}),
         )
         if not isinstance(result, dict):
             raise NarwalCloudError("Firmware update response did not contain a description")
@@ -640,7 +640,7 @@ class NarwalCloudApi:
             device_id=device_id,
             product_id=product_id,
             # VoiceService accepts both documented success response codes.
-            accepted_codes=frozenset({"0", "400"}),
+            accepted_codes=frozenset({"0", "200"}),
         )
         values = result.get("list", []) if isinstance(result, dict) else result
         if not isinstance(values, list):

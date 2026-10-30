@@ -19,7 +19,7 @@ from . import NarwalConfigEntry
 from .const import FAN_SPEED_LIST, FAN_SPEED_MAP
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
-from .narwal_client import CommandResponse, CommandResult, WorkingStatus
+from .narwal_client import CommandResponse, CommandResult, ServiceResult, WorkingStatus
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,11 +81,20 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
 
     @staticmethod
     def _require_success(response: CommandResponse, action: str) -> None:
-        """Raise a safe HA error when the robot rejects an action."""
-        if not response.success:
-            raise HomeAssistantError(
-                f"Narwal {action} failed with result code {response.result_code}"
-            )
+        """Raise a safe HA error when the robot rejects an action.
+
+        Device service results carry actionable states (power low, mop or dust
+        box missing, already in the station, ...), so report the protocol name
+        instead of a bare number when it is known.
+        """
+        if response.success:
+            return
+        code = response.result_code
+        try:
+            reason = ServiceResult(code).name if code is not None else "UNKNOWN"
+        except ValueError:
+            reason = f"UNKNOWN({code})"
+        raise HomeAssistantError(f"Narwal {action} failed with result code {code} ({reason})")
 
     async def _async_refresh_after_write(self) -> None:
         """Refresh coordinator data after a successful write."""
@@ -142,7 +151,12 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
     _ACTION_TIMEOUT = 10.0
 
     async def async_start(self) -> None:
-        """Start or resume cleaning."""
+        """Start or resume cleaning.
+
+        A new clean first tries the built-in Freo Mind plan for the active map,
+        then direct Freo Mind and sweep-and-mop. The plan select entity affects
+        only the explicit start-plan button, not this default action.
+        """
         state = self.coordinator.data
         is_cleaning = state and state.has_cleaning_task
         if is_cleaning and state.is_paused:
@@ -237,7 +251,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             _Segment(
                 id=str(room.room_id),
                 name=room.display_name,
-                group="Rooms" if room.category == 1 else "Utility" if room.category == 2 else None,
+                group=None,  # Map field 4 is floor texture, not a room category.
             )
             for room in state.map_data.rooms
             if room.room_id > 0

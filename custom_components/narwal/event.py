@@ -38,7 +38,7 @@ class NarwalNotificationEvent(NarwalEntity, EventEntity):
         }
         # A failed startup sync leaves no reliable baseline. Prime silently on
         # the first successful refresh so historical messages are not replayed.
-        self._primed = coordinator.cloud_metadata_available
+        self._primed = state is not None and state.notifications_loaded
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -47,7 +47,7 @@ class NarwalNotificationEvent(NarwalEntity, EventEntity):
         if state is not None:
             current_ids = {item.message_id for item in state.notifications}
             if not self._primed:
-                if self.coordinator.cloud_metadata_available:
+                if state.notifications_loaded:
                     self._seen_ids = current_ids
                     self._primed = True
             else:

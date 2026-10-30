@@ -33,8 +33,9 @@ TOPIC_CMD_WASH_AND_DRY_MOP = "supply/wash_and_dry_mop"
 TOPIC_CMD_DUST_GATHERING = "supply/dust_gathering"
 TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME = "supply/get_dry_mop_remain_time"
 
-# APK StartClean.Request field 1 carries a CleanTask; StartWithPlan.Request
-# on clean/plan/start instead expects a varint planId (and optional mapId).
+# StartClean.Request field 1 carries a CleanTask. StartWithPlan.Request on
+# clean/plan/start carries planId (field 1) and optional mapId (field 2).
+# Starting a saved plan is distinct from the App's temporary room selection.
 TOPIC_CMD_START_CLEAN = "clean/start_clean"
 TOPIC_CMD_START_CLEAN_PLAN = "clean/plan/start"
 TOPIC_CMD_EASY_CLEAN = "clean/easy_clean/start"
@@ -101,6 +102,47 @@ class CommandResult(IntEnum):
     # protocol's general-failure result. Internal code must use the real name.
     NOT_APPLICABLE = GENERAL_FAILED
     CONFLICT = 3  # e.g., recall when already recalling
+
+
+class ServiceResult(IntEnum):
+    """ServiceResult response codes from the App protobuf.
+
+    Values recovered from the App's ServiceResult enum. Codes beyond 1-3 are
+    not failure aliases: several are actionable device states (power low, mop
+    not installed, robot already in the station, ...), so surface the name
+    instead of an opaque number.
+    """
+
+    UNSPECIFIED = 0
+    PERFORM_SUCCESS = 1
+    PERFORM_GENERAL_FAILED = 2
+    ALREADY_EXECUTING = 3
+    POWER_LOWER = 4
+    ROBOT_TRAPPED_IN_STATION = 5
+    ROBOT_IN_STATION_WHEN_RECALL = 6
+    ROBOT_NOT_IN_STATION_WHEN_BUILD_MAP = 7
+    ROBOT_NOT_CONTACT_WITH_STATION = 8
+    DUST_BOX_NOT_INSTALLED = 9
+    MOP_NOT_INSTALLED = 10
+    FORBIDDEN_TASK_IN_NET_CONFIG = 11
+    FORBIDDEN_TASK_IN_UPGRADE = 12
+    FORBIDDEN_TASK_IN_BLUETOOTH_PAIRING = 13
+    FORBIDDEN_TASK_IN_AUTO_WATER_SELF_CHECK = 14
+    FORBIDDEN_RECALL_IN_RE_LOCALIZATION = 15
+    FORBIDDEN_TASK_IF_NOT_ACTIVATED = 16
+    FORBIDDEN_TASK_IF_STATION_NOT_CONNECTED = 17
+    FORBIDDEN_TASK_IF_CAN_NOT_REACH_SPECIFIED_AREA = 18
+    FORBIDDEN_TASK_WHEN_CHARGE = 19
+    FORBIDDEN_RECALL_WHEN_NO_MAP = 20
+    LIDAR_CALIBRATION_SUCCESS = 21
+    NO_NEED_UPDATE_MAP = 22
+    NOT_IN_MAIN_MAP = 23
+    NO_STATION_IN_MAP = 24
+    FORBIDDEN_TASK_IF_STATION_IN_CERTIFICATION = 25
+    UPPER_COVER_NOT_INSTALLED = 26
+    IN_TELECONTROL = 28
+    FORBIDDEN_IN_SECOND_CLEAN = 29
+    STATION_LIGHT_CTRL_TIMEOUT = 32
 
 
 class WorkingStatus(IntEnum):
@@ -177,18 +219,21 @@ class WorkingStatus(IntEnum):
 class FanLevel(IntEnum):
     """Suction fan speed levels from the SweepMode protocol enum."""
 
-    QUIET = 0
-    NORMAL = 1
-    STRONG = 2
-    MAX = 3
+    UNSPECIFIED = 0
+    QUIET = 1
+    NORMAL = 2
+    STRONG = 3
+    MAX = 4
+    SUPER = 5
 
 
 class MopHumidity(IntEnum):
     """Mop wetness levels."""
 
-    DRY = 0
-    NORMAL = 1
-    WET = 2
+    UNSPECIFIED = 0
+    DRY = 1
+    NORMAL = 2
+    WET = 3
 
 
 class DryMopStrength(IntEnum):
@@ -250,23 +295,29 @@ class BaseStatusField(IntEnum):
     Battery notes (confirmed via 35-min monitor capture, 2026-02-27):
       Field 2  = real-time battery level as IEEE 754 float32
                  (e.g. 1118175232 → 83.0%, matching app display ~84%)
-      Field 38 = static battery health (always 100; design capacity, not SOC)
+      Fields 36, 38 and 41 are maintenance fields, not battery fields.
     """
 
-    BATTERY_LEVEL = 2  # real-time SOC as float32 — CONFIRMED
+    BATTERY_LEVEL = 2  # real-time SOC as float32 on the observed firmware
     MODE_STATE = 3
-    SESSION_ID = 13
+    BINDED_UUID = 13
     SENSOR_DATA = 25
-    TIMESTAMP = 36
-    BATTERY_HEALTH = 38  # static, always 100 (design capacity)
-    BATTERY_CAPACITY = 41
+    STATION_BAG_HEALTH_RESET_TIME = 36
+    CURING_AGENT_CONSUMPTION_PERCENT = 38
+    HEAVY_DETERGENT_REMAIN_PERCENT = 41
+    # Deprecated compatibility aliases; their names do not describe the wire fields.
+    SESSION_ID = BINDED_UUID
+    TIMESTAMP = STATION_BAG_HEALTH_RESET_TIME
+    BATTERY_HEALTH = CURING_AGENT_CONSUMPTION_PERCENT
+    BATTERY_CAPACITY = HEAVY_DETERGENT_REMAIN_PERCENT
 
 
 # upgrade_status field numbers
 class UpgradeStatusField(IntEnum):
     """Field numbers in the upgrade_status protobuf message."""
 
-    STATUS_CODE = 4
+    STATUS_CODE = 2
+    STAGE = 4
     CURRENT_FIRMWARE = 7
     TARGET_FIRMWARE = 8
 

@@ -20,6 +20,7 @@ from .client import (
     NarwalAuthenticationError,
     NarwalClient,
     NarwalCommandError,
+    NarwalCommandTimeoutError,
     NarwalConnectionError,
 )
 from .cloud_api import (
@@ -395,6 +396,7 @@ class NarwalCloudClient(NarwalClient):
             )
         else:
             self.state.notifications = notifications
+            self.state.notifications_loaded = True
         if isinstance(task_records, BaseException):
             errors.append(task_records)
             _LOGGER.debug("Narwal task record refresh failed: %s", task_records)
@@ -535,7 +537,7 @@ class NarwalCloudClient(NarwalClient):
         self._connect_error = None
         self._response_topics.clear()
         try:
-            account = await self._api.login()
+            await self._api.login()
             devices = await self._api.devices()
             self.cloud_device = next(
                 (item for item in devices if item.device_id == self.device_id),
@@ -544,6 +546,9 @@ class NarwalCloudClient(NarwalClient):
             if self.cloud_device is None:
                 raise NarwalConnectionError("Configured robot is no longer bound to this account")
             broker_url = await self._api.broker()
+            account = self._api.account
+            if account is None:
+                raise NarwalAuthenticationError("Narwal cloud credentials are unavailable")
         except NarwalCloudAuthError as err:
             raise NarwalAuthenticationError("Narwal cloud credentials were rejected") from err
         except NarwalCloudError as err:
@@ -981,6 +986,7 @@ class NarwalCloudClient(NarwalClient):
                         "Narwal MQTT connection changed during subscription"
                     )
                 self._response_topics.add(response_topic)
+                _LOGGER.debug("MQTT response subscription ready: endpoint=%s", short_topic)
             finally:
                 if self._subscriptions.get(mid) is subscription:
                     self._subscriptions.pop(mid)
@@ -1004,6 +1010,11 @@ class NarwalCloudClient(NarwalClient):
             )
             if info.rc != mqtt.MQTT_ERR_SUCCESS:
                 raise NarwalConnectionError(f"MQTT publish failed ({info.rc})")
+            _LOGGER.debug(
+                "MQTT command queued: endpoint=%s awaiting_response=%s",
+                short_topic,
+                expect_response,
+            )
             return await future if future is not None else None
         finally:
             self._pending.pop(message_id, None)
@@ -1030,7 +1041,12 @@ class NarwalCloudClient(NarwalClient):
                     timeout=timeout,
                 )
             except TimeoutError:
-                raise NarwalCommandError(
+                _LOGGER.warning(
+                    "MQTT command timed out: endpoint=%s timeout=%ss",
+                    short_topic,
+                    timeout,
+                )
+                raise NarwalCommandTimeoutError(
                     f"No response for command '{short_topic}' within {timeout}s"
                 ) from None
         if raw is None:
