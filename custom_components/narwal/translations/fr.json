@@ -158,7 +158,7 @@
     },
     "button": {
       "resume_base_search": {
-        "name": "Reprendre la recherche de la station"
+        "name": "Reprendre la tâche"
       },
       "dry_mop": {
         "name": "Sécher les serpillières"

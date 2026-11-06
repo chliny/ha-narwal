@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeassistant.components.vacuum import VacuumActivity
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.narwal.button import (
@@ -31,6 +32,7 @@ from custom_components.narwal.narwal_client.models import (
     NarwalState,
 )
 from custom_components.narwal.sensor import NarwalRobotErrorSensor
+from custom_components.narwal.vacuum import NarwalVacuum
 
 
 def _item(type_id: int, *, category: int = 2, reset_supported: bool = True) -> ConsumableInfo:
@@ -109,30 +111,52 @@ def test_robot_error_sensor_combines_multiple_active_errors() -> None:
     assert sensor.extra_state_attributes == {"errors": []}
 
 
-def test_base_search_retry_matches_app_and_requires_single_error() -> None:
+def test_start_and_resume_button_follow_paused_task_not_error_or_dock() -> None:
+    """Start resumes paused tasks; a docked idle robot starts a new clean."""
     state = NarwalState()
     coordinator = _coordinator(state)
-    client = coordinator.client
-    client.resume = AsyncMock(return_value=CommandResponse(result_code=CommandResult.SUCCESS))
+    coordinator.client.start = AsyncMock(
+        return_value=CommandResponse(result_code=CommandResult.SUCCESS)
+    )
+    coordinator.client.resume = AsyncMock(
+        return_value=CommandResponse(result_code=CommandResult.SUCCESS)
+    )
     button = NarwalResumeBaseSearchButton(coordinator)
-    sensor = NarwalRobotErrorSensor(coordinator)
-    assert not button.available and sensor.native_value is None
-    with pytest.raises(HomeAssistantError):
-        asyncio.run(button.async_press())
-    client.resume.assert_not_awaited()
+    vacuum = NarwalVacuum(coordinator)
 
-    state.update_from_base_status({"1": {"1": BASE_STATION_NOT_FOUND_ERROR}, "11": 1})
-    assert button.available
-    assert sensor.native_value == "机器人找不到基站，请放入基站并对准充电片"
-    asyncio.run(button.async_press())
-    client.resume.assert_awaited_once_with(timeout=10.0)
-    coordinator.async_request_refresh.assert_awaited_once()
     state.update_from_base_status(
-        {"1": [{"1": BASE_STATION_NOT_FOUND_ERROR}, {"1": 0x02100017}], "11": 1}
+        {"1": {"1": BASE_STATION_NOT_FOUND_ERROR}, "3": {"1": 1}, "11": 2}
     )
     assert not button.available
-    state.update_from_base_status({"1": {"1": BASE_STATION_NOT_FOUND_ERROR}, "11": 2})
+    with pytest.raises(HomeAssistantError, match="not currently available"):
+        asyncio.run(button.async_press())
+    asyncio.run(vacuum.async_start())
+    coordinator.client.start.assert_awaited_once()
+    coordinator.client.resume.assert_not_awaited()
+
+    state.update_from_base_status({"1": {"1": 0x02100017}, "3": {"1": 5, "2": 1}, "11": 1})
+    assert button.available
+    assert vacuum.activity == VacuumActivity.PAUSED
+    asyncio.run(vacuum.async_start())
+    coordinator.client.resume.assert_awaited_once_with(timeout=10.0)
+    coordinator.client.start.assert_awaited_once()
+
+    state.update_from_base_status(
+        {
+            "1": [{"1": BASE_STATION_NOT_FOUND_ERROR}, {"1": 0x02100017}],
+            "3": {"1": 14, "2": 1},
+            "11": 2,
+        }
+    )
+    assert button.available
+    assert vacuum.activity == VacuumActivity.PAUSED
+    asyncio.run(button.async_press())
+    assert coordinator.client.resume.await_count == 2
+    coordinator.client.start.assert_awaited_once()
+
+    state.update_from_base_status({"3": {"1": 14}, "11": 2})
     assert not button.available
+    assert coordinator.async_request_refresh.await_count == 3
 
 
 def test_base_search_retry_exact_command_topic_and_payload() -> None:

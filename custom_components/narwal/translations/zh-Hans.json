@@ -158,7 +158,7 @@
     },
     "button": {
       "resume_base_search": {
-        "name": "继续寻找基站并恢复任务"
+        "name": "继续任务"
       },
       "dry_mop": {
         "name": "烘干拖布"

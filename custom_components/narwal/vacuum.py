@@ -106,9 +106,8 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         state = self.coordinator.data
         if state is None:
             return VacuumActivity.IDLE
-        is_cleaning_state = state.has_cleaning_task
-        # Only trust pause while a cleaning task is active.
-        if state.is_paused and is_cleaning_state:
+        # A paused station or return task is still an active task.
+        if state.has_paused_task:
             return VacuumActivity.PAUSED
         # Check returning before cleaning because cleaning task sub-states can
         # represent recall/parking phases.
@@ -158,8 +157,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         only the explicit start-plan button, not this default action.
         """
         state = self.coordinator.data
-        is_cleaning = state and state.has_cleaning_task
-        if is_cleaning and state.is_paused:
+        if state is not None and state.has_paused_task:
             response = await self._async_await_command(
                 self.coordinator.client.resume(timeout=self._ACTION_TIMEOUT),
                 "resume",

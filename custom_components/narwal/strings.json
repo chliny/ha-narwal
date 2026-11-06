@@ -158,7 +158,7 @@
     },
     "button": {
       "resume_base_search": {
-        "name": "Continue searching for base station"
+        "name": "Resume task"
       },
       "dry_mop": {
         "name": "Dry mop pads"

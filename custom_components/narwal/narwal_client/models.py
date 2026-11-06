@@ -695,6 +695,14 @@ class NarwalState:
     raw_working_status: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def has_paused_task(self) -> bool:
+        """Return whether a real task, rather than idle status, is paused."""
+        return self.is_paused and self.working_status not in (
+            WorkingStatus.IDLE,
+            WorkingStatus.UNKNOWN,
+        )
+
+    @property
     def has_cleaning_task(self) -> bool:
         """Return whether the active protocol state represents cleaning."""
         return self.working_status.is_cleaning_task
