@@ -118,7 +118,12 @@
         "name": "电池健康详情"
       },
       "dry_mop_remaining_time": {
-        "name": "拖布烘干剩余时间"
+        "name": "拖布烘干剩余时间",
+        "state_attributes": {
+          "protocol_unit": {
+            "name": "协议单位"
+          }
+        }
       },
       "dust_bag_health": {
         "name": "尘袋健康度"
@@ -168,6 +173,15 @@
       },
       "start_clean_plan": {
         "name": "启动所选清洁计划"
+      },
+      "reset_consumable": {
+        "name": "重置{name}"
+      },
+      "reset_maintain_dust_bin": {
+        "name": "重置尘盒"
+      },
+      "reset_maintain_wash_ribs": {
+        "name": "重置基站清洁组件"
       }
     },
     "switch": {
@@ -249,6 +263,71 @@
       "volume": {
         "name": "音量"
       }
+    }
+  },
+  "exceptions": {
+    "action_failed": {
+      "message": "Narwal 操作失败，结果码 {result_code}"
+    },
+    "clean_plan_unavailable": {
+      "message": "没有可用的已保存清洁计划"
+    },
+    "cloud_consumable_reset_failed": {
+      "message": "Narwal 云端耗材重置失败"
+    },
+    "command_no_response": {
+      "message": "Narwal {action} 未收到可用的命令回复；请检查集成日志中的协议错误"
+    },
+    "command_timed_out": {
+      "message": "机器人未在超时时间内回复 Narwal {action} 命令；机器人仍可能在线。请检查集成日志中尝试的命令端点"
+    },
+    "connection_unavailable": {
+      "message": "Narwal {action} 失败：集成的云端连接不可用；即使 App 显示机器人在线，也请检查集成连接"
+    },
+    "consumable_reset_unavailable": {
+      "message": "当前无法重置该耗材"
+    },
+    "resume_failed": {
+      "message": "Narwal 继续任务失败，结果码 {result_code}"
+    },
+    "resume_unavailable": {
+      "message": "当前无法继续任务"
+    },
+    "room_ids_not_integer": {
+      "message": "Narwal 房间 ID 必须是整数"
+    },
+    "room_ids_not_positive": {
+      "message": "Narwal 房间 ID 必须是正整数"
+    },
+    "rooms_required": {
+      "message": "请至少选择一个房间进行清扫"
+    },
+    "unsupported_clean_plan": {
+      "message": "不支持的清洁计划：{option}"
+    },
+    "unsupported_clean_strategy": {
+      "message": "不支持的清洁策略：{option}"
+    },
+    "unsupported_dry_mop_strength": {
+      "message": "不支持的拖布烘干强度：{option}"
+    },
+    "unsupported_fan_speed": {
+      "message": "不支持的吸力档位：{option}"
+    },
+    "unsupported_map": {
+      "message": "不支持的地图：{option}"
+    },
+    "unsupported_mop_humidity": {
+      "message": "不支持的拖布湿度选项：{option}"
+    },
+    "unsupported_voice_pack": {
+      "message": "不支持的语音包：{option}"
+    },
+    "vacuum_action_failed": {
+      "message": "Narwal {action} 失败，结果码 {result_code}（{reason}）"
+    },
+    "voice_language_missing": {
+      "message": "机器人未上报语音语言"
     }
   }
 }

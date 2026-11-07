@@ -125,14 +125,22 @@ class NarwalMopHumiditySelect(NarwalEntity, SelectEntity):
         """Set mop humidity."""
         level = MOP_HUMIDITY_OPTIONS.get(option)
         if level is None:
-            raise HomeAssistantError(f"Unsupported mop humidity option: {option}")
+            raise HomeAssistantError(
+                f"Unsupported mop humidity option: {option}",
+                translation_domain=DOMAIN,
+                translation_key="unsupported_mop_humidity",
+                translation_placeholders={"option": option},
+            )
         response = await self._async_await_command(
             self.coordinator.client.set_mop_humidity(level),
             "set mop humidity",
         )
         if not response.success:
             raise HomeAssistantError(
-                f"Narwal action failed with result code {response.result_code}"
+                f"Narwal action failed with result code {response.result_code}",
+                translation_domain=DOMAIN,
+                translation_key="action_failed",
+                translation_placeholders={"result_code": str(response.result_code)},
             )
         # Reflect the accepted value immediately. A later base-status payload
         # replaces this raw state and therefore remains authoritative.
@@ -178,7 +186,12 @@ class NarwalCleanStrategySelect(NarwalConfigSelect):
     async def async_select_option(self, option: str) -> None:
         strategy = CLEAN_STRATEGY_OPTIONS.get(option)
         if strategy is None:
-            raise HomeAssistantError(f"Unsupported cleaning strategy: {option}")
+            raise HomeAssistantError(
+                f"Unsupported cleaning strategy: {option}",
+                translation_domain=DOMAIN,
+                translation_key="unsupported_clean_strategy",
+                translation_placeholders={"option": option},
+            )
         raw_current = self.coordinator.device_config.get("18")
         current = raw_current if isinstance(raw_current, dict) else None
         response = await self._async_await_command(
@@ -190,7 +203,10 @@ class NarwalCleanStrategySelect(NarwalConfigSelect):
         )
         if not response.success:
             raise HomeAssistantError(
-                f"Narwal action failed with result code {response.result_code}"
+                f"Narwal action failed with result code {response.result_code}",
+                translation_domain=DOMAIN,
+                translation_key="action_failed",
+                translation_placeholders={"result_code": str(response.result_code)},
             )
         stored_config = self.coordinator.device_config.get("18")
         if isinstance(stored_config, dict):
@@ -216,14 +232,22 @@ class NarwalDryMopStrengthSelect(NarwalConfigSelect):
     async def async_select_option(self, option: str) -> None:
         strength = DRY_MOP_STRENGTH_OPTIONS.get(option)
         if strength is None:
-            raise HomeAssistantError(f"Unsupported drying strength: {option}")
+            raise HomeAssistantError(
+                f"Unsupported drying strength: {option}",
+                translation_domain=DOMAIN,
+                translation_key="unsupported_dry_mop_strength",
+                translation_placeholders={"option": option},
+            )
         response = await self._async_await_command(
             self.coordinator.client.set_dry_mop_strength(strength),
             "set mop drying strength",
         )
         if not response.success:
             raise HomeAssistantError(
-                f"Narwal action failed with result code {response.result_code}"
+                f"Narwal action failed with result code {response.result_code}",
+                translation_domain=DOMAIN,
+                translation_key="action_failed",
+                translation_placeholders={"result_code": str(response.result_code)},
             )
         self.coordinator.device_config["12"] = int(strength)
         self.async_write_ha_state()
@@ -324,7 +348,12 @@ class NarwalCleanPlanSelect(NarwalEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         plan_id = self._option_map.get(option)
         if plan_id is None:
-            raise HomeAssistantError(f"Unsupported cleaning plan: {option}")
+            raise HomeAssistantError(
+                f"Unsupported cleaning plan: {option}",
+                translation_domain=DOMAIN,
+                translation_key="unsupported_clean_plan",
+                translation_placeholders={"option": option},
+            )
         self.coordinator.selected_clean_plan_id = plan_id
         self.async_write_ha_state()
 
@@ -360,14 +389,22 @@ class NarwalMapSelect(NarwalEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         map_id = self._option_map.get(option)
         if map_id is None:
-            raise HomeAssistantError(f"Unsupported map: {option}")
+            raise HomeAssistantError(
+                f"Unsupported map: {option}",
+                translation_domain=DOMAIN,
+                translation_key="unsupported_map",
+                translation_placeholders={"option": option},
+            )
         response = await self._async_await_command(
             self.coordinator.client.switch_map(map_id),
             "switch map",
         )
         if not response.success:
             raise HomeAssistantError(
-                f"Narwal action failed with result code {response.result_code}"
+                f"Narwal action failed with result code {response.result_code}",
+                translation_domain=DOMAIN,
+                translation_key="action_failed",
+                translation_placeholders={"result_code": str(response.result_code)},
             )
         # The map switch already succeeded and invalidated the previous map.
         # A follow-up download failure should not report the switch itself as
@@ -430,10 +467,19 @@ class NarwalVoicePackSelect(NarwalEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         pack = self._option_map.get(option)
         if pack is None:
-            raise HomeAssistantError(f"Unsupported voice package: {option}")
+            raise HomeAssistantError(
+                f"Unsupported voice package: {option}",
+                translation_domain=DOMAIN,
+                translation_key="unsupported_voice_pack",
+                translation_placeholders={"option": option},
+            )
         language = self.coordinator.client.state.current_voice.get("language", "")
         if not language:
-            raise HomeAssistantError("The robot did not report its voice language")
+            raise HomeAssistantError(
+                "The robot did not report its voice language",
+                translation_domain=DOMAIN,
+                translation_key="voice_language_missing",
+            )
         response = await self._async_await_command(
             self.coordinator.client.set_custom_voice(
                 language=language,
@@ -446,7 +492,10 @@ class NarwalVoicePackSelect(NarwalEntity, SelectEntity):
         # SWITCH_VOICE_SUCCESS (3, an already-downloaded package) as success.
         if response.result_code not in (1, 3):
             raise HomeAssistantError(
-                f"Narwal action failed with result code {response.result_code}"
+                f"Narwal action failed with result code {response.result_code}",
+                translation_domain=DOMAIN,
+                translation_key="action_failed",
+                translation_placeholders={"result_code": str(response.result_code)},
             )
         self.coordinator.client.state.current_voice = {
             "language": language,

@@ -32,7 +32,7 @@ from .narwal_client.const import (
     CONSUMABLE_MAINTAIN_TYPE_MAP,
     CONSUMABLE_REPLACE_TYPE_MAP,
 )
-from .narwal_client.error_codes import error_message
+from .narwal_client.error_codes import error_message, load_error_catalog
 
 _TASK_RECORD_TYPE_STATES: dict[int, str] = {
     # APK ReportBaseTypes.TaskType, used by the work-record JSON model.
@@ -109,11 +109,12 @@ async def async_setup_entry(
 ) -> None:
     """Set up Narwal sensor entities."""
     coordinator = entry.runtime_data
+    error_catalog = await hass.async_add_executor_job(load_error_catalog)
     entities: list[SensorEntity] = [
         NarwalSensor(coordinator, description) for description in SENSOR_DESCRIPTIONS
     ]
     entities.append(NarwalChargingStateSensor(coordinator))
-    entities.append(NarwalRobotErrorSensor(coordinator))
+    entities.append(NarwalRobotErrorSensor(coordinator, error_catalog))
     entities.append(NarwalLatestNotificationSensor(coordinator))
     entities.append(NarwalCleanProgressSensor(coordinator))
     known_consumables: set[str] = set()
@@ -190,19 +191,29 @@ class NarwalRobotErrorSensor(NarwalEntity, SensorEntity):
     _attr_translation_key = "robot_error"
     _attr_icon = "mdi:robot-vacuum-alert"
 
-    def __init__(self, coordinator: NarwalCoordinator) -> None:
+    def __init__(
+        self,
+        coordinator: NarwalCoordinator,
+        error_catalog: dict[str, dict[str, str]] | None = None,
+    ) -> None:
         super().__init__(coordinator)
+        self._error_catalog = error_catalog
         self._set_entity_identity("sensor", "robot_error")
+
+    def _error_message(self, code: int) -> str:
+        """Use the Home Assistant system language for shared entity state."""
+        language = self.hass.config.language if self._error_catalog is not None else None
+        return error_message(code, language, self._error_catalog)
 
     @property
     def native_value(self) -> str | None:
         state = self.coordinator.data
         if state is None or not state.error_codes:
             return None
-        messages = list(dict.fromkeys(error_message(code) for code in state.error_codes))
-        if len(messages) == 1:
-            return messages[0]
-        return f"{messages[0]}（另有{len(messages) - 1}项不同故障）"
+        messages = list(dict.fromkeys(self._error_message(code) for code in state.error_codes))
+        # Vendor app texts; the state reports the first message and every
+        # active code stays available in the ``errors`` attribute.
+        return messages[0]
 
     @property
     def extra_state_attributes(self) -> dict[str, list[dict[str, str]]]:
@@ -211,7 +222,7 @@ class NarwalRobotErrorSensor(NarwalEntity, SensorEntity):
             return {"errors": []}
         return {
             "errors": [
-                {"code": f"0x{code:08X}", "message": error_message(code)}
+                {"code": f"0x{code:08X}", "message": self._error_message(code)}
                 for code in state.error_codes
             ]
         }
@@ -473,9 +484,10 @@ class NarwalDryMopRemainingSensor(NarwalEntity, SensorEntity):
         return state.dry_mop_remaining_time if state else None
 
     @property
-    def extra_state_attributes(self) -> dict[str, str]:
-        # The remainTime protocol field does not declare a unit.
-        return {"protocol_unit": "not declared by protocol"}
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        # The remainTime protocol field does not declare a unit; the attribute
+        # name is translated, the value stays machine-readable.
+        return {"protocol_unit": None}
 
 
 class NarwalDustBagHealthSensor(NarwalEntity, SensorEntity):

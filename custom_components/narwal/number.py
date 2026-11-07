@@ -11,6 +11,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
+from .const import DOMAIN
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 
@@ -69,7 +70,10 @@ class NarwalVolumeNumber(NarwalEntity, NumberEntity):
         )
         if not response.success:
             raise HomeAssistantError(
-                f"Narwal action failed with result code {response.result_code}"
+                f"Narwal action failed with result code {response.result_code}",
+                translation_domain=DOMAIN,
+                translation_key="action_failed",
+                translation_placeholders={"result_code": str(response.result_code)},
             )
         self.coordinator.device_config["1"] = round(value)
         self.async_write_ha_state()

@@ -69,17 +69,26 @@ class NarwalEntity(CoordinatorEntity[NarwalCoordinator]):
             raise HomeAssistantError(
                 f"Narwal {action} timed out waiting for a command reply; "
                 "the robot can still be online in the app. "
-                "Check the integration logs for the attempted command endpoints"
+                "Check the integration logs for the attempted command endpoints",
+                translation_domain=DOMAIN,
+                translation_key="command_timed_out",
+                translation_placeholders={"action": action},
             ) from err
         except NarwalCommandError as err:
             raise HomeAssistantError(
                 f"Narwal {action} failed because no usable command response was received; "
-                "check the integration logs for protocol errors"
+                "check the integration logs for protocol errors",
+                translation_domain=DOMAIN,
+                translation_key="command_no_response",
+                translation_placeholders={"action": action},
             ) from err
         except NarwalConnectionError as err:
             raise HomeAssistantError(
                 f"Narwal {action} failed: the integration's cloud connection is unavailable; "
-                "check the integration connection even if the robot is online in the app"
+                "check the integration connection even if the robot is online in the app",
+                translation_domain=DOMAIN,
+                translation_key="connection_unavailable",
+                translation_placeholders={"action": action},
             ) from err
 
     @property

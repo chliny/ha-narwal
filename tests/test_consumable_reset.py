@@ -13,7 +13,6 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.narwal.button import (
     NarwalConsumableResetButton,
     NarwalResumeBaseSearchButton,
-    _reset_protocol,
     async_setup_entry,
 )
 from custom_components.narwal.narwal_client.client import NarwalClient
@@ -25,6 +24,7 @@ from custom_components.narwal.narwal_client.const import (
 from custom_components.narwal.narwal_client.error_codes import (
     ROBOT_ERROR_MESSAGES,
     error_message,
+    load_error_catalog,
 )
 from custom_components.narwal.narwal_client.models import (
     CommandResponse,
@@ -35,10 +35,16 @@ from custom_components.narwal.sensor import NarwalRobotErrorSensor
 from custom_components.narwal.vacuum import NarwalVacuum
 
 
-def _item(type_id: int, *, category: int = 2, reset_supported: bool = True) -> ConsumableInfo:
+def _item(
+    type_id: int,
+    *,
+    category: int = 2,
+    reset_supported: bool = True,
+    name: str = "Consumable",
+) -> ConsumableInfo:
     return ConsumableInfo(
         key=f"type_{type_id}",
-        name="Consumable",
+        name=name,
         type_id=type_id,
         category=category,
         total_duration=100,
@@ -97,11 +103,27 @@ def test_j4_error_catalog_has_readable_messages_and_unknown_fallback() -> None:
     assert error_message(0xDEADBEEF) == "未知机器人故障（0xDEADBEEF）"
 
 
+def test_robot_error_entity_uses_system_language_and_preserves_unknown_codes() -> None:
+    """The entity shows a usable localized fault, not a raw catalog key."""
+    state = NarwalState()
+    state.update_from_base_status({"1": [{"1": 0x02100050}, {"1": 0xDEADBEEF}]})
+    sensor = NarwalRobotErrorSensor(_coordinator(state), load_error_catalog())
+    sensor.hass = SimpleNamespace(config=SimpleNamespace(language="fr"))
+
+    assert "station de base" in sensor.native_value.lower()
+    assert sensor.extra_state_attributes["errors"][0]["message"] == sensor.native_value
+    assert sensor.extra_state_attributes["errors"][1] == {
+        "code": "0xDEADBEEF",
+        "message": "0xDEADBEEF",
+    }
+
+
 def test_robot_error_sensor_combines_multiple_active_errors() -> None:
     state = NarwalState()
     state.update_from_base_status({"1": [{"1": 0x02100018}, {"1": 0x02100017}]})
     sensor = NarwalRobotErrorSensor(_coordinator(state))
-    assert sensor.native_value == "机器人找不到基站，请放入基站并对准充电片（另有1项不同故障）"
+    # The state shows one vendor message; the attribute lists every active code.
+    assert sensor.native_value == "机器人找不到基站，请放入基站并对准充电片"
     assert [error["code"] for error in sensor.extra_state_attributes["errors"]] == [
         "0x02100018",
         "0x02100017",
@@ -216,20 +238,138 @@ def test_cloud_reset_uses_app_v1_path_and_exact_payload() -> None:
     assert api._request.await_count == 1
 
 
-@pytest.mark.parametrize(
-    ("type_id", "category", "expected"),
-    [
-        (3, 2, ("replace", 3)),
-        (101, 1, ("maintain", 1)),
-        (110, 2, None),
-        (999, 2, None),
-        (3, 0, None),
-    ],
-)
-def test_reset_mapping_is_unambiguous(
-    type_id: int, category: int, expected: tuple[str, int] | None
-) -> None:
-    assert _reset_protocol(_item(type_id, category=category)) == expected
+def _reset_buttons(added: list) -> dict[str, NarwalConsumableResetButton]:
+    return {
+        entity.unique_id: entity
+        for entity in added
+        if isinstance(entity, NarwalConsumableResetButton)
+    }
+
+
+def test_cloud_dust_box_and_wash_ribs_resets_use_app_enums() -> None:
+    """The App resets these maintain items via MQTT maintain enums 1 and 4."""
+    state = NarwalState(
+        consumables={
+            item.key: item
+            for item in (
+                _item(101, category=1, name="尘盒"),
+                _item(104, category=1, name="基站清洁组件"),
+            )
+        }
+    )
+    state.mqtt_consumables_supported = True
+    state.consumable_maintain_items = {1, 4}
+    coordinator = _coordinator(state)
+    added: list = []
+    entry = SimpleNamespace(runtime_data=coordinator, async_on_unload=Mock())
+
+    asyncio.run(async_setup_entry(Mock(), entry, lambda entities: added.extend(entities)))
+
+    buttons = _reset_buttons(added)
+    assert set(buttons) == {
+        "narwal_test_device_reset_consumable_type_101",
+        "narwal_test_device_reset_consumable_type_104",
+    }
+    asyncio.run(buttons["narwal_test_device_reset_consumable_type_101"].async_press())
+    asyncio.run(buttons["narwal_test_device_reset_consumable_type_104"].async_press())
+    assert [call.kwargs for call in coordinator.client.reset_consumable.await_args_list] == [
+        {"category": "maintain", "protocol_value": 1},
+        {"category": "maintain", "protocol_value": 4},
+    ]
+
+
+def test_missing_item_type_does_not_create_a_guessed_reset_button() -> None:
+    """The cloud type id is global, so a missing category must fail closed."""
+    state = NarwalState(consumables={"type_101": _item(101, category=0)})
+    state.mqtt_consumables_supported = True
+    state.consumable_maintain_items = {1}
+    coordinator = _coordinator(state)
+    added: list = []
+    entry = SimpleNamespace(runtime_data=coordinator, async_on_unload=Mock())
+
+    asyncio.run(async_setup_entry(Mock(), entry, lambda entities: added.extend(entities)))
+
+    # The missing cloud category cannot authorize a reset; the independently
+    # reported robot maintenance item still has its own button.
+    assert set(_reset_buttons(added)) == {"narwal_test_device_reset_consumable_maintain_1"}
+
+
+def test_reset_buttons_exist_before_robot_answers_consumable_query() -> None:
+    """Entity registration must not depend on the robot being awake at startup."""
+    state = NarwalState(consumables={"type_3": _item(3)})
+    coordinator = _coordinator(state)  # mqtt_consumables_supported is still False
+    added: list = []
+    entry = SimpleNamespace(runtime_data=coordinator, async_on_unload=Mock())
+
+    asyncio.run(async_setup_entry(Mock(), entry, lambda entities: added.extend(entities)))
+
+    buttons = _reset_buttons(added)
+    assert set(buttons) == {"narwal_test_device_reset_consumable_type_3"}
+    # The entity exists but cannot be pressed until the robot confirms support.
+    assert not buttons["narwal_test_device_reset_consumable_type_3"].available
+
+
+def test_robot_maintain_items_add_resets_absent_from_cloud_list() -> None:
+    """Robot-reported maintain items back the App resets the cloud omits."""
+    state = NarwalState(consumables={})
+    state.mqtt_consumables_supported = True
+    state.consumable_maintain_items = {1, 4}
+    coordinator = _coordinator(state)
+    added: list = []
+    entry = SimpleNamespace(runtime_data=coordinator, async_on_unload=Mock())
+
+    asyncio.run(async_setup_entry(Mock(), entry, lambda entities: added.extend(entities)))
+
+    buttons = _reset_buttons(added)
+    assert set(buttons) == {
+        "narwal_test_device_reset_consumable_maintain_1",
+        "narwal_test_device_reset_consumable_maintain_4",
+    }
+    asyncio.run(buttons["narwal_test_device_reset_consumable_maintain_1"].async_press())
+    asyncio.run(buttons["narwal_test_device_reset_consumable_maintain_4"].async_press())
+    assert [call.kwargs for call in coordinator.client.reset_consumable.await_args_list] == [
+        {"category": "maintain", "protocol_value": 1},
+        {"category": "maintain", "protocol_value": 4},
+    ]
+
+    # The cloud list can arrive later than the robot status. The old fallback
+    # must stop accepting presses when the cloud-backed button is registered.
+    state.consumables["type_101"] = _item(101, category=1)
+    coordinator.async_add_listener.call_args.args[0]()
+    cloud_button = _reset_buttons(added)["narwal_test_device_reset_consumable_type_101"]
+    assert cloud_button.available
+    assert not buttons["narwal_test_device_reset_consumable_maintain_1"].available
+    with pytest.raises(HomeAssistantError, match="not currently available"):
+        asyncio.run(buttons["narwal_test_device_reset_consumable_maintain_1"].async_press())
+    assert coordinator.client.reset_consumable.await_count == 2
+
+    # If the cloud withdraws the item again, its old button cannot silently
+    # become a robot-only fallback under a different entity identity.
+    state.consumables.clear()
+    assert not cloud_button.available
+    assert buttons["narwal_test_device_reset_consumable_maintain_1"].available
+
+
+def test_robot_maintain_items_do_not_bypass_app_disabled_reset() -> None:
+    """A cloud item whose App reset is disabled must not gain a fallback button."""
+    state = NarwalState(
+        consumables={
+            item.key: item
+            for item in (
+                _item(101, category=1, reset_supported=False),
+                _item(104, category=1, reset_supported=False),
+            )
+        }
+    )
+    state.mqtt_consumables_supported = True
+    state.consumable_maintain_items = {1, 4}
+    coordinator = _coordinator(state)
+    added: list = []
+    entry = SimpleNamespace(runtime_data=coordinator, async_on_unload=Mock())
+
+    asyncio.run(async_setup_entry(Mock(), entry, lambda entities: added.extend(entities)))
+
+    assert _reset_buttons(added) == {}
 
 
 def test_buttons_created_without_active_maintenance_alert() -> None:
@@ -275,7 +415,15 @@ def test_failed_robot_reset_does_not_refresh() -> None:
     state.mqtt_consumables_supported = True
     coordinator = _coordinator(state)
     coordinator.client.reset_consumable.return_value = CommandResponse(result_code=2)
-    button = NarwalConsumableResetButton(coordinator, state.consumables["type_3"], "replace", 3)
+    button = NarwalConsumableResetButton(
+        coordinator,
+        key="reset_consumable_type_3",
+        category="replace",
+        protocol_value=3,
+        translation_key="reset_consumable",
+        consumable_key="type_3",
+        consumable_type_id=3,
+    )
 
     with pytest.raises(HomeAssistantError):
         asyncio.run(button.async_press())

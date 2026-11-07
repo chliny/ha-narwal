@@ -1,4 +1,8 @@
-"""Readable robot error-code messages from Narwal app J4 zh-CN catalog."""
+"""Readable robot error-code messages from the Narwal app's J4 catalogs."""
+
+import json
+from pathlib import Path
+from typing import cast
 
 # Source: analysis/decoded/.../robot_exception/J4/zh-CN.json.
 # This catalog is J4-specific; unknown and other-model errors stay visible as hex.
@@ -191,6 +195,27 @@ ROBOT_ERROR_MESSAGES: dict[int, str] = {
 }
 
 
-def error_message(code: int) -> str:
-    """Return the J4 app's Chinese message or an explicit unknown-code value."""
-    return ROBOT_ERROR_MESSAGES.get(code, f"未知机器人故障（0x{code:08X}）")
+def load_error_catalog() -> dict[str, dict[str, str]]:
+    """Load the bundled J4 app messages; call outside the event loop."""
+    with Path(__file__).with_name("j4_error_catalog.json").open(encoding="utf-8") as file:
+        return cast("dict[str, dict[str, str]]", json.load(file))
+
+
+def error_message(
+    code: int,
+    language: str | None = None,
+    catalog: dict[str, dict[str, str]] | None = None,
+) -> str:
+    """Return a localized J4 message, falling back to English and then the code."""
+    if catalog is None:
+        return ROBOT_ERROR_MESSAGES.get(code, f"未知机器人故障（0x{code:08X}）")
+
+    locale = (language or "en").lower().replace("_", "-")
+    if locale.startswith("zh"):
+        locale = "zh-tw" if any(part in locale for part in ("hant", "tw", "hk", "mo")) else "zh-cn"
+    else:
+        locale = next(
+            (key for key in catalog if key.split("-")[0] == locale.split("-")[0]), "en-us"
+        )
+    key = f"0x{code:08X}"
+    return catalog.get(locale, {}).get(key) or catalog.get("en-us", {}).get(key) or key

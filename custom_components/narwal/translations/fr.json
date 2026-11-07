@@ -118,7 +118,12 @@
         "name": "Détails de santé de la batterie"
       },
       "dry_mop_remaining_time": {
-        "name": "Temps de séchage restant"
+        "name": "Temps de séchage restant",
+        "state_attributes": {
+          "protocol_unit": {
+            "name": "Unité du protocole"
+          }
+        }
       },
       "dust_bag_health": {
         "name": "État du sac à poussière"
@@ -168,6 +173,15 @@
       },
       "start_clean_plan": {
         "name": "Démarrer le plan sélectionné"
+      },
+      "reset_consumable": {
+        "name": "Réinitialiser {name}"
+      },
+      "reset_maintain_dust_bin": {
+        "name": "Réinitialiser le bac à poussière"
+      },
+      "reset_maintain_wash_ribs": {
+        "name": "Réinitialiser l’assemblage de nettoyage de la base"
       }
     },
     "switch": {
@@ -249,6 +263,71 @@
       "volume": {
         "name": "Volume"
       }
+    }
+  },
+  "exceptions": {
+    "action_failed": {
+      "message": "L’action Narwal a échoué avec le code {result_code}"
+    },
+    "clean_plan_unavailable": {
+      "message": "Aucun plan de nettoyage enregistré n’est disponible"
+    },
+    "cloud_consumable_reset_failed": {
+      "message": "Échec de la réinitialisation du consommable via le cloud Narwal"
+    },
+    "command_no_response": {
+      "message": "Aucune réponse exploitable n’a été reçue pour {action} ; consultez les journaux de l’intégration pour les erreurs de protocole"
+    },
+    "command_timed_out": {
+      "message": "Le robot n’a pas répondu à {action} à temps ; il peut toujours être en ligne dans l’application. Consultez les journaux de l’intégration pour les endpoints essayés"
+    },
+    "connection_unavailable": {
+      "message": "La connexion cloud de l’intégration est indisponible pour {action} ; vérifiez la connexion de l’intégration même si le robot est en ligne dans l’application"
+    },
+    "consumable_reset_unavailable": {
+      "message": "La réinitialisation du consommable n’est pas disponible actuellement"
+    },
+    "resume_failed": {
+      "message": "La reprise de tâche Narwal a échoué avec le code {result_code}"
+    },
+    "resume_unavailable": {
+      "message": "La reprise de tâche n’est pas disponible actuellement"
+    },
+    "room_ids_not_integer": {
+      "message": "Les identifiants de pièce Narwal doivent être des entiers"
+    },
+    "room_ids_not_positive": {
+      "message": "Les identifiants de pièce Narwal doivent être des entiers positifs"
+    },
+    "rooms_required": {
+      "message": "Sélectionnez au moins une pièce Narwal à nettoyer"
+    },
+    "unsupported_clean_plan": {
+      "message": "Plan de nettoyage non pris en charge : {option}"
+    },
+    "unsupported_clean_strategy": {
+      "message": "Stratégie de nettoyage non prise en charge : {option}"
+    },
+    "unsupported_dry_mop_strength": {
+      "message": "Intensité de séchage non prise en charge : {option}"
+    },
+    "unsupported_fan_speed": {
+      "message": "Vitesse d’aspiration non prise en charge : {option}"
+    },
+    "unsupported_map": {
+      "message": "Carte non prise en charge : {option}"
+    },
+    "unsupported_mop_humidity": {
+      "message": "Option d’humidité de serpillière non prise en charge : {option}"
+    },
+    "unsupported_voice_pack": {
+      "message": "Pack vocal non pris en charge : {option}"
+    },
+    "vacuum_action_failed": {
+      "message": "L’action Narwal {action} a échoué avec le code {result_code} ({reason})"
+    },
+    "voice_language_missing": {
+      "message": "Le robot n’a pas indiqué sa langue vocale"
     }
   }
 }

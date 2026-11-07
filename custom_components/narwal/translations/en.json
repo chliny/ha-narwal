@@ -118,7 +118,12 @@
         "name": "Battery health details"
       },
       "dry_mop_remaining_time": {
-        "name": "Mop drying remaining time"
+        "name": "Mop drying remaining time",
+        "state_attributes": {
+          "protocol_unit": {
+            "name": "Protocol unit"
+          }
+        }
       },
       "dust_bag_health": {
         "name": "Dust bag health"
@@ -168,6 +173,15 @@
       },
       "start_clean_plan": {
         "name": "Start selected cleaning plan"
+      },
+      "reset_consumable": {
+        "name": "Reset {name}"
+      },
+      "reset_maintain_dust_bin": {
+        "name": "Reset dust bin"
+      },
+      "reset_maintain_wash_ribs": {
+        "name": "Reset base station cleaning assembly"
       }
     },
     "switch": {
@@ -249,6 +263,71 @@
       "volume": {
         "name": "Volume"
       }
+    }
+  },
+  "exceptions": {
+    "action_failed": {
+      "message": "Narwal action failed with result code {result_code}"
+    },
+    "clean_plan_unavailable": {
+      "message": "No saved Narwal cleaning plan is available"
+    },
+    "cloud_consumable_reset_failed": {
+      "message": "Narwal cloud consumable reset failed"
+    },
+    "command_no_response": {
+      "message": "Narwal {action} failed because no usable command response was received; check the integration logs for protocol errors"
+    },
+    "command_timed_out": {
+      "message": "Narwal {action} timed out waiting for a command reply; the robot can still be online in the app. Check the integration logs for the attempted command endpoints"
+    },
+    "connection_unavailable": {
+      "message": "Narwal {action} failed: the integration's cloud connection is unavailable; check the integration connection even if the robot is online in the app"
+    },
+    "consumable_reset_unavailable": {
+      "message": "Consumable reset is not currently available"
+    },
+    "resume_failed": {
+      "message": "Narwal resume task failed with result code {result_code}"
+    },
+    "resume_unavailable": {
+      "message": "Task resume is not currently available"
+    },
+    "room_ids_not_integer": {
+      "message": "Narwal room IDs must be integers"
+    },
+    "room_ids_not_positive": {
+      "message": "Narwal room IDs must be positive integers"
+    },
+    "rooms_required": {
+      "message": "Select at least one Narwal room to clean"
+    },
+    "unsupported_clean_plan": {
+      "message": "Unsupported cleaning plan: {option}"
+    },
+    "unsupported_clean_strategy": {
+      "message": "Unsupported cleaning strategy: {option}"
+    },
+    "unsupported_dry_mop_strength": {
+      "message": "Unsupported drying strength: {option}"
+    },
+    "unsupported_fan_speed": {
+      "message": "Unsupported fan speed: {option}"
+    },
+    "unsupported_map": {
+      "message": "Unsupported map: {option}"
+    },
+    "unsupported_mop_humidity": {
+      "message": "Unsupported mop humidity option: {option}"
+    },
+    "unsupported_voice_pack": {
+      "message": "Unsupported voice package: {option}"
+    },
+    "vacuum_action_failed": {
+      "message": "Narwal {action} failed with result code {result_code} ({reason})"
+    },
+    "voice_language_missing": {
+      "message": "The robot did not report its voice language"
     }
   }
 }

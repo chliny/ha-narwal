@@ -11,6 +11,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
+from .const import DOMAIN
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .narwal_client import WorkingStatus
@@ -271,7 +272,10 @@ class NarwalConfigSwitch(NarwalEntity, SwitchEntity):
         )
         if not response.success:
             raise HomeAssistantError(
-                f"Narwal action failed with result code {response.result_code}"
+                f"Narwal action failed with result code {response.result_code}",
+                translation_domain=DOMAIN,
+                translation_key="action_failed",
+                translation_placeholders={"result_code": str(response.result_code)},
             )
         self.coordinator.device_config[str(self.entity_description.get_field)] = int(enabled)
         self.async_write_ha_state()
@@ -309,7 +313,10 @@ class NarwalWashAndDryMopSwitch(NarwalEntity, SwitchEntity):
         )
         if not response.success:
             raise HomeAssistantError(
-                f"Narwal action failed with result code {response.result_code}"
+                f"Narwal action failed with result code {response.result_code}",
+                translation_domain=DOMAIN,
+                translation_key="action_failed",
+                translation_placeholders={"result_code": str(response.result_code)},
             )
         await self.coordinator.async_request_refresh()
 
@@ -327,6 +334,9 @@ class NarwalWashAndDryMopSwitch(NarwalEntity, SwitchEntity):
         )
         if not response.success:
             raise HomeAssistantError(
-                f"Narwal action failed with result code {response.result_code}"
+                f"Narwal action failed with result code {response.result_code}",
+                translation_domain=DOMAIN,
+                translation_key="action_failed",
+                translation_placeholders={"result_code": str(response.result_code)},
             )
         await self.coordinator.async_request_refresh()
