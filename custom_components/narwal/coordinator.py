@@ -349,6 +349,17 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             state.working_status == WorkingStatus.IDLE or state.working_status.is_station_task
         )
         was_cleaning = self._prev_working_status.is_cleaning_task
+        if state.working_status != self._prev_working_status:
+            # Report task transitions separately from command acknowledgement.
+            # Even a cleaning task type alone does not prove physical motion.
+            _LOGGER.info(
+                "Robot task changed: %s -> %s (substatus=%s paused=%s docked=%s)",
+                self._prev_working_status.name,
+                state.working_status.name,
+                state.task_sub_status,
+                state.is_paused,
+                state.is_docked,
+            )
         if now_idle_or_station and was_cleaning:
             _LOGGER.info("Return-to-dock detected, refreshing dock status")
             self.config_entry.async_create_background_task(

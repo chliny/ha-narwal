@@ -709,10 +709,22 @@ class NarwalClient:
         active_map = self._active_map_id()
         if active_map is not None:
             self.state.current_map_id = active_map
-        payload = self._build_clean_payload_v2(room_ids, clean_mode=CleanMode.SMART)
         topic = self._start_endpoint_order()[0]
         if topic == TOPIC_CMD_EASY_CLEAN:
+            # Captured J3 App room-smart request (room 3, map 1, result=1):
+            # SweepMopSyncAreaOption fan=2, mopStrength=1, humidity=2, count=1.
+            # Robot base-status fan/humidity describe separately adjustable
+            # settings; copying them made this request differ from the App's
+            # Freo Mind room start. Restrict the captured defaults to ax3/J3.
+            payload = self._build_clean_payload_v2(
+                room_ids,
+                clean_mode=CleanMode.SMART,
+                suction=FanLevel.NORMAL,
+                mop_humidity=MopHumidity.NORMAL,
+            )
             payload = self._convert_clean_to_easy_payload(payload)
+        else:
+            payload = self._build_clean_payload_v2(room_ids, clean_mode=CleanMode.SMART)
         cached_rooms = {
             room.room_id: room.display_name
             for room in (self.state.map_data.rooms if self.state.map_data else [])
@@ -728,6 +740,10 @@ class NarwalClient:
             room_ids,
             {room_id: cached_rooms.get(room_id, "<not in cached map>") for room_id in room_ids},
             sorted(cached_rooms.items()),
+        )
+        _LOGGER.debug(
+            "Room clean protobuf: %s",
+            " ".join(f"{byte:02x}" for byte in payload),
         )
         try:
             return await self.send_command(topic, payload=payload, timeout=10.0)

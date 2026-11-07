@@ -16,7 +16,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import NarwalConfigEntry
-from .const import FAN_SPEED_LIST, FAN_SPEED_MAP
+from .const import DOMAIN, FAN_SPEED_LIST, FAN_SPEED_MAP
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 from .narwal_client import CommandResponse, CommandResult, ServiceResult, WorkingStatus
@@ -94,7 +94,16 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             reason = ServiceResult(code).name if code is not None else "UNKNOWN"
         except ValueError:
             reason = f"UNKNOWN({code})"
-        raise HomeAssistantError(f"Narwal {action} failed with result code {code} ({reason})")
+        raise HomeAssistantError(
+            f"Narwal {action} failed with result code {code} ({reason})",
+            translation_domain=DOMAIN,
+            translation_key="vacuum_action_failed",
+            translation_placeholders={
+                "action": action,
+                "result_code": str(code),
+                "reason": str(reason),
+            },
+        )
 
     async def _async_refresh_after_write(self) -> None:
         """Refresh coordinator data after a successful write."""
@@ -139,7 +148,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             return None
         try:
             level = int(raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
         return next(
             (name for name, value in FAN_SPEED_MAP.items() if int(value) == level),
@@ -216,7 +225,12 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         """Set the fan speed."""
         level = FAN_SPEED_MAP.get(fan_speed)
         if level is None:
-            raise HomeAssistantError(f"Unsupported fan speed: {fan_speed}")
+            raise HomeAssistantError(
+                f"Unsupported fan speed: {fan_speed}",
+                translation_domain=DOMAIN,
+                translation_key="unsupported_fan_speed",
+                translation_placeholders={"option": fan_speed},
+            )
         response = await self._async_await_command(
             self.coordinator.client.set_fan_speed(level),
             "set fan speed",
@@ -262,13 +276,25 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         a room-specific clean command to the robot.
         """
         if not segment_ids:
-            raise HomeAssistantError("Select at least one Narwal room to clean")
+            raise HomeAssistantError(
+                "Select at least one Narwal room to clean",
+                translation_domain=DOMAIN,
+                translation_key="rooms_required",
+            )
         try:
             room_ids = list(dict.fromkeys(int(segment_id) for segment_id in segment_ids))
         except (TypeError, ValueError) as err:
-            raise HomeAssistantError("Narwal room IDs must be integers") from err
+            raise HomeAssistantError(
+                "Narwal room IDs must be integers",
+                translation_domain=DOMAIN,
+                translation_key="room_ids_not_integer",
+            ) from err
         if any(room_id <= 0 for room_id in room_ids):
-            raise HomeAssistantError("Narwal room IDs must be positive integers")
+            raise HomeAssistantError(
+                "Narwal room IDs must be positive integers",
+                translation_domain=DOMAIN,
+                translation_key="room_ids_not_positive",
+            )
         _LOGGER.info("Starting room-specific clean: rooms=%s", room_ids)
         response = await self._async_await_command(
             self.coordinator.client.start_rooms(room_ids),
@@ -287,6 +313,22 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         )
         self._require_success(response, f"room clean ({result_name})")
         await self._async_refresh_after_write()
+        # SUCCESS acknowledges the request, not robot movement. Log the
+        # status observed after the normal post-write refresh for diagnosis;
+        # even a successful poll may contain stale task information, and
+        # cannot prove physical movement. No additional command is sent.
+        state = self.coordinator.client.state
+        _LOGGER.info(
+            "Room clean post-refresh: poll_succeeded=%s task=%s substatus=%s"
+            " cleaning=%s paused=%s returning=%s docked=%s",
+            self.coordinator._consecutive_failures == 0,
+            state.working_status.name,
+            state.task_sub_status,
+            state.is_cleaning,
+            state.is_paused,
+            state.is_returning,
+            state.is_docked,
+        )
 
     @callback
     def _handle_coordinator_update(self) -> None:
