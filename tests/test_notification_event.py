@@ -33,81 +33,59 @@ def _notification(message_id: str, created_at: int) -> NarwalNotification:
     )
 
 
-def test_cloud_recovery_primes_history_without_replaying_it() -> None:
-    state = NarwalState()
+def _update(entity: NarwalNotificationEvent) -> dict[str, object]:
+    """Deliver one coordinator update and return the entity's latest event data."""
+    with patch.object(entity, "async_write_ha_state"):
+        entity._handle_coordinator_update()
+    return entity.state_attributes
+
+
+def test_recovered_cloud_history_is_not_replayed_as_events() -> None:
+    """After a failed startup sync, the first successful fetch only sets a baseline."""
+    state = NarwalState()  # notifications_loaded is still False: no reliable baseline
     coordinator = _coordinator(state, cloud_available=False)
     entity = NarwalNotificationEvent(coordinator)
 
-    historical = [_notification("old-1", 1), _notification("old-2", 2)]
-    state.notifications = historical
+    state.notifications = [_notification("old-1", 1), _notification("old-2", 2)]
     state.notifications_loaded = True
     coordinator.cloud_metadata_available = True
 
-    with (
-        patch.object(entity, "_trigger_notification") as trigger,
-        patch.object(entity, "async_write_ha_state"),
-    ):
-        entity._handle_coordinator_update()
+    attributes = _update(entity)
 
-    trigger.assert_not_called()
+    assert entity.state is None
+    assert attributes == {"event_type": None}
 
 
-def test_new_notification_triggers_after_recovery_baseline() -> None:
-    state = NarwalState()
-    coordinator = _coordinator(state, cloud_available=False)
-    entity = NarwalNotificationEvent(coordinator)
-
-    state.notifications = [_notification("old-1", 1)]
-    state.notifications_loaded = True
-    coordinator.cloud_metadata_available = True
-    with (
-        patch.object(entity, "_trigger_notification"),
-        patch.object(entity, "async_write_ha_state"),
-    ):
-        entity._handle_coordinator_update()
-
-    new_notification = _notification("new-1", 3)
-    state.notifications = [new_notification, state.notifications[0]]
-    with (
-        patch.object(entity, "_trigger_notification") as trigger,
-        patch.object(entity, "async_write_ha_state"),
-    ):
-        entity._handle_coordinator_update()
-
-    trigger.assert_called_once_with(new_notification)
-
-
-def test_other_cloud_success_does_not_prime_notification_history() -> None:
-    state = NarwalState()
-    coordinator = _coordinator(state, cloud_available=True)
-    entity = NarwalNotificationEvent(coordinator)
-    with (
-        patch.object(entity, "_trigger_notification") as trigger,
-        patch.object(entity, "async_write_ha_state"),
-    ):
-        entity._handle_coordinator_update()  # Another endpoint succeeded only.
-        assert not entity._primed
-        state.notifications = [_notification("old", 1)]
-        state.notifications_loaded = True
-        entity._handle_coordinator_update()  # First real notification success.
-        trigger.assert_not_called()
-        assert entity._primed
-        state.notifications = [_notification("new", 2), state.notifications[0]]
-        entity._handle_coordinator_update()
-        assert trigger.call_args.args[0].message_id == "new"
-
-
-def test_empty_successful_sync_allows_later_notification() -> None:
+def test_new_cloud_notification_is_emitted_once_as_an_event() -> None:
+    """A newly synchronized cloud message becomes exactly one HA event."""
     state = NarwalState(notifications_loaded=True)
     coordinator = _coordinator(state, cloud_available=True)
     entity = NarwalNotificationEvent(coordinator)
 
-    new_notification = _notification("new-1", 1)
-    state.notifications = [new_notification]
-    with (
-        patch.object(entity, "_trigger_notification") as trigger,
-        patch.object(entity, "async_write_ha_state"),
-    ):
-        entity._handle_coordinator_update()
+    state.notifications = [_notification("new-1", 3)]
+    attributes = _update(entity)
 
-    trigger.assert_called_once_with(new_notification)
+    assert attributes == {
+        "event_type": "notification",
+        "message_id": "new-1",
+        "title": "Robot notification",
+        "content": "new-1",
+        "created_at": 3,
+        "is_read": False,
+    }
+    emitted_state = entity.state
+    assert emitted_state is not None
+
+    # The same notification is not replayed on the next coordinator refresh.
+    assert _update(entity) == attributes
+    assert entity.state == emitted_state
+
+    # Consumable reminders keep their distinct event type for user automations.
+    reminder = NarwalNotification(
+        message_id="new-2", title="滤网", content="请更换滤网", created_at=4
+    )
+    state.notifications = [reminder, *state.notifications]
+    attributes = _update(entity)
+    assert attributes["event_type"] == "consumable"
+    assert attributes["message_id"] == "new-2"
+    assert entity.state != emitted_state
