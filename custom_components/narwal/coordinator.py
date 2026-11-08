@@ -208,6 +208,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
         # Set up push callback and start persistent listener
         self.client.on_state_update = self._on_state_update
+        self.client.on_connection_lost = self.async_update_listeners
         self._listen_task = self.config_entry.async_create_background_task(
             self.hass,
             self._async_listen(),
@@ -295,6 +296,12 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                     self.client.get_current_voice_info,
                 )
             )
+        elif (
+            self.client.state.mqtt_consumables_supported
+            and not self.client.state.mqtt_consumables_available
+        ):
+            # Recheck an invalidated reminder as soon as the robot responds.
+            calls.append(self.client.get_consumable_info)
         for call in calls:
             try:
                 await call()
@@ -483,6 +490,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 raise NarwalConnectionError("Not connected")
             await self.client.get_status(full_update=True)
         except Exception as err:
+            self.client.invalidate_robot_consumables()
             self._consecutive_failures += 1
             await self._async_refresh_cloud_metadata()
             await self._async_maybe_refresh_firmware_update()
@@ -548,6 +556,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             # Stop callbacks before awaiting teardown so no late MQTT message
             # can publish coordinator data while the entry is unloading.
             self.client.on_state_update = None
+            self.client.on_connection_lost = None
             if self._listen_task and not self._listen_task.done():
                 self._listen_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

@@ -8,6 +8,7 @@ import logging
 import ssl
 import time
 import uuid
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import urlparse
 
@@ -20,6 +21,7 @@ from .client import (
     NarwalAuthenticationError,
     NarwalClient,
     NarwalCommandError,
+    NarwalCommandNotSentError,
     NarwalCommandTimeoutError,
     NarwalConnectionError,
 )
@@ -173,6 +175,66 @@ def _protobuf_fields(data: bytes) -> dict[int, list[int | bytes]]:
     return fields
 
 
+def _decode_consumable_response(data: bytes) -> dict[str, Any]:
+    """Decode Response.consumableInfo and its repeated enum fields from wire bytes."""
+
+    def fields(message: bytes) -> Iterator[tuple[int, int, int | bytes]]:
+        offset = 0
+        while offset < len(message):
+            key, offset = _read_varint(message, offset)
+            number, wire = key >> 3, key & 7
+            if not 1 <= number < (1 << 29):
+                raise ValueError("invalid protobuf field number")
+            value: int | bytes
+            if wire == 0:
+                value, offset = _read_varint(message, offset)
+            elif wire == 2:
+                length, offset = _read_varint(message, offset)
+                end = offset + length
+                if end > len(message):
+                    raise ValueError("truncated protobuf field")
+                value = message[offset:end]
+                offset = end
+            elif wire in (1, 5):
+                end = offset + (8 if wire == 1 else 4)
+                if end > len(message):
+                    raise ValueError("truncated protobuf fixed field")
+                value = message[offset:end]
+                offset = end
+            else:
+                raise ValueError("unsupported protobuf wire type")
+            yield number, wire, value
+
+    nested: dict[str, list[int]] = {"1": [], "2": []}
+    present = False
+    for number, wire, value in fields(data):
+        if number != 1:
+            continue
+        if wire != 2 or not isinstance(value, bytes):
+            raise ValueError("invalid consumable info wire type")
+        present = True
+        for field, item_wire, item in fields(value):
+            if field not in (1, 2):
+                continue
+            if item_wire == 0 and isinstance(item, int):
+                values = [item]
+            elif item_wire == 2 and isinstance(item, bytes):
+                values = []
+                offset = 0
+                while offset < len(item):
+                    enum, offset = _read_varint(item, offset)
+                    values.append(enum)
+            else:
+                raise ValueError("invalid consumable enum wire type")
+            # Protobuf enum values use int32, including unknown enum numbers.
+            for enum in values:
+                enum &= 0xFFFFFFFF
+                nested[str(field)].append(enum - (1 << 32) if enum & (1 << 31) else enum)
+    if not present:
+        raise ValueError("missing consumable info")
+    return {"1": nested}
+
+
 def _service_envelope(user_uuid: str, payload: bytes) -> bytes:
     header = _string_field(1, user_uuid) + _string_field(2, user_uuid)
     # The business endpoint is the MQTT topic. The binary body contains only
@@ -307,6 +369,7 @@ class NarwalCloudClient(NarwalClient):
         self._broadcast_tasks: set[asyncio.Task[None]] = set()
         self._accept_mqtt_messages = False
         self.cloud_device: CloudDevice | None = None
+        self._cloud_consumables_generation = 0
 
     @property
     def connected(self) -> bool:
@@ -327,19 +390,38 @@ class NarwalCloudClient(NarwalClient):
         device = self.cloud_device
         if device is None:
             raise NarwalConnectionError("Cloud device metadata is unavailable")
+        if self.state.cloud_consumable_reset_in_progress:
+            raise NarwalConnectionError("A cloud consumable reset is already in progress")
+        if type_id in self.state.cloud_consumable_reset_uncertain:
+            raise NarwalConnectionError("The previous cloud consumable reset result is unknown")
+        # The server may apply the reset even when its response is lost.
+        self.state.cloud_consumable_reset_in_progress = True
+        self.state.cloud_consumable_reset_uncertain.add(type_id)
+        self._cloud_consumables_generation += 1
+        self.state.cloud_consumables_available = False
         try:
             await self._api.reset_cloud_consumable(
                 device_id=device.device_id,
                 product_id=device.product_id,
                 type_id=type_id,
             )
+            self.state.cloud_consumable_reset_uncertain.discard(type_id)
         except NarwalCloudAuthError as err:
             raise NarwalAuthenticationError("Narwal cloud credentials expired") from err
         except NarwalCloudError as err:
             raise NarwalConnectionError("Narwal cloud reset failed") from err
+        finally:
+            self.state.cloud_consumable_reset_in_progress = False
+            self._cloud_consumables_generation += 1
+            self.state.cloud_consumables_available = False
 
     async def get_cloud_metadata(self, *, task_record_pages: int = 1) -> None:
         """Refresh consumable lifetimes and device notifications."""
+        # Do not use cached consumables to authorize writes during a failed or
+        # interrupted refresh. Keep the values themselves for read-only views.
+        self._cloud_consumables_generation += 1
+        consumables_generation = self._cloud_consumables_generation
+        self.state.cloud_consumables_available = False
         device = self.cloud_device
         if device is None:
             raise NarwalConnectionError("Cloud device metadata is unavailable")
@@ -386,8 +468,12 @@ class NarwalCloudClient(NarwalClient):
                 "Narwal consumable refresh failed: %s",
                 consumables,
             )
-        else:
+        elif (
+            consumables_generation == self._cloud_consumables_generation
+            and not self.state.cloud_consumable_reset_in_progress
+        ):
             self.state.consumables = {item.key: item for item in consumables}
+            self.state.cloud_consumables_available = True
         if isinstance(notifications, BaseException):
             errors.append(notifications)
             _LOGGER.debug(
@@ -715,6 +801,8 @@ class NarwalCloudClient(NarwalClient):
     def _mark_disconnected(self, source_client: mqtt.Client | None = None) -> None:
         if source_client is not None and source_client is not self._mqtt:
             return
+        notify = self._mqtt_ready.is_set() or self.state.mqtt_consumables_available
+        self.invalidate_robot_consumables()
         self._accept_mqtt_messages = False
         self._mqtt_ready.clear()
         self._subscribe_mid = None
@@ -733,6 +821,8 @@ class NarwalCloudClient(NarwalClient):
         for _response_topic, response_future in self._pending.values():
             if not response_future.done():
                 response_future.set_exception(error)
+        if notify and self.on_connection_lost is not None:
+            self.on_connection_lost()
 
     def _on_mqtt_message(
         self,
@@ -961,11 +1051,20 @@ class NarwalCloudClient(NarwalClient):
         payload: bytes,
         *,
         expect_response: bool,
+        timeout: float | None = None,
     ) -> bytes | None:
+        """Publish one request and optionally await its response.
+
+        ``timeout`` bounds subscription and response together when given; direct
+        callers without it keep the subscription default and rely on their own
+        outer timeout for the response.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
         client = self._mqtt
         account = self._api.account
         if client is None or account is None or not self.connected:
-            raise NarwalConnectionError("Not connected to the Narwal cloud")
+            raise NarwalCommandNotSentError("Not connected to the Narwal cloud")
         request_topic = f"{self.topic_prefix}/{self.device_id}/{short_topic.lstrip('/')}"
         response_topic = f"{request_topic}/response"
         if response_topic not in self._response_topics:
@@ -976,13 +1075,27 @@ class NarwalCloudClient(NarwalClient):
                 options=mqtt.SubscribeOptions(qos=0),
             )
             if result != mqtt.MQTT_ERR_SUCCESS or mid is None:
-                raise NarwalConnectionError(f"MQTT response subscription failed ({result})")
-            subscription = asyncio.get_running_loop().create_future()
+                raise NarwalCommandNotSentError(f"MQTT response subscription failed ({result})")
+            subscription = loop.create_future()
             self._subscriptions[mid] = subscription
+            subscription_timeout = (
+                COMMAND_RESPONSE_TIMEOUT if deadline is None else max(0.0, deadline - loop.time())
+            )
             try:
-                await asyncio.wait_for(subscription, timeout=COMMAND_RESPONSE_TIMEOUT)
+                try:
+                    await asyncio.wait_for(subscription, timeout=subscription_timeout)
+                except TimeoutError:
+                    # Nothing is published before the SUBACK, so this is a
+                    # definite "not sent" rather than an ambiguous command.
+                    raise NarwalCommandNotSentError(
+                        "MQTT response subscription timed out"
+                    ) from None
+                except NarwalConnectionError as err:
+                    raise NarwalCommandNotSentError(
+                        "Narwal MQTT connection closed before publishing"
+                    ) from err
                 if client is not self._mqtt or not self.connected or not self._accept_mqtt_messages:
-                    raise NarwalConnectionError(
+                    raise NarwalCommandNotSentError(
                         "Narwal MQTT connection changed during subscription"
                     )
                 self._response_topics.add(response_topic)
@@ -999,7 +1112,7 @@ class NarwalCloudClient(NarwalClient):
         properties.CorrelationData = _correlation_data(message_id)
         future: asyncio.Future[bytes] | None = None
         if expect_response:
-            future = asyncio.get_running_loop().create_future()
+            future = loop.create_future()
             self._pending[message_id] = (response_topic, future)
         try:
             info = client.publish(
@@ -1009,13 +1122,17 @@ class NarwalCloudClient(NarwalClient):
                 properties=properties,
             )
             if info.rc != mqtt.MQTT_ERR_SUCCESS:
-                raise NarwalConnectionError(f"MQTT publish failed ({info.rc})")
+                raise NarwalCommandNotSentError(f"MQTT publish failed ({info.rc})")
             _LOGGER.debug(
                 "MQTT command queued: endpoint=%s awaiting_response=%s",
                 short_topic,
                 expect_response,
             )
-            return await future if future is not None else None
+            if future is None:
+                return None
+            if deadline is None:
+                return await future
+            return await asyncio.wait_for(future, timeout=max(0.0, deadline - loop.time()))
         finally:
             self._pending.pop(message_id, None)
             if future is not None:
@@ -1027,17 +1144,16 @@ class NarwalCloudClient(NarwalClient):
         self,
         short_topic: str,
         payload: bytes = b"",
-        timeout: float = COMMAND_RESPONSE_TIMEOUT,
+        timeout: float | None = None,
     ) -> CommandResponse:
         """Send a protobuf service request through cloud MQTT."""
+        timeout = COMMAND_RESPONSE_TIMEOUT if timeout is None else timeout
         async with self._command_lock:
             try:
-                raw = await asyncio.wait_for(
-                    self._publish_request(
-                        short_topic,
-                        payload,
-                        expect_response=True,
-                    ),
+                raw = await self._publish_request(
+                    short_topic,
+                    payload,
+                    expect_response=True,
                     timeout=timeout,
                 )
             except TimeoutError:
@@ -1055,12 +1171,16 @@ class NarwalCloudClient(NarwalClient):
 
     def _decode_response(self, short_topic: str, raw: bytes) -> CommandResponse:
         """Decode endpoint results without treating payload fields as result codes."""
+        short_topic = short_topic.lstrip("/")
         try:
             response_payload = _decode_envelope(raw)
-            decoded = self._decode_protobuf(response_payload)
+            decoded = (
+                _decode_consumable_response(response_payload)
+                if short_topic == TOPIC_CMD_GET_CONSUMABLE_INFO
+                else self._decode_protobuf(response_payload)
+            )
         except Exception as err:
             raise NarwalCommandError(f"Malformed response for command '{short_topic}'") from err
-        short_topic = short_topic.lstrip("/")
         if not isinstance(decoded, dict) or (not decoded and short_topic != TOPIC_CMD_ACTIVE_ROBOT):
             raise NarwalCommandError(f"Empty response for command '{short_topic}'")
         # ActiveRobotPublish.Response contains topicsDuration=1 (message) and

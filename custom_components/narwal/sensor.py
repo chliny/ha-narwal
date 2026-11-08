@@ -765,7 +765,7 @@ class NarwalConsumableSensor(NarwalEntity, SensorEntity):
             else CONSUMABLE_REPLACE_TYPE_MAP
         )
         protocol_value = mapping.get(consumable.type_id)
-        if state and state.mqtt_consumables_supported and protocol_value is not None:
+        if state and state.mqtt_consumables_available and protocol_value is not None:
             values = (
                 state.consumable_maintain_items
                 if consumable.category == 1
@@ -778,4 +778,10 @@ class NarwalConsumableSensor(NarwalEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Cloud lifetime data does not depend on the robot being awake."""
-        return self.coordinator.cloud_metadata_available and self._consumable is not None
+        state = self.coordinator.data
+        return bool(
+            self.coordinator.cloud_metadata_available
+            and state is not None
+            and state.cloud_consumables_available
+            and self._consumable is not None
+        )

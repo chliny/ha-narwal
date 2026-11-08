@@ -307,7 +307,7 @@ class NarwalCloudApi:
             device_id=device_id,
             product_id=product_id,
         )
-        values: list[Any]
+        values: Any
         if isinstance(result, dict):
             values = next(
                 (
@@ -318,29 +318,35 @@ class NarwalCloudApi:
                         "list",
                         "data_list",
                     )
-                    if isinstance(result.get(key), list)
+                    if key in result
                 ),
-                [],
+                None,
             )
         else:
-            values = result if isinstance(result, list) else []
+            values = result
+        if not isinstance(values, list):
+            raise NarwalCloudError("Consumables list response was invalid")
 
         consumables: list[ConsumableInfo] = []
         for value in values:
             if not isinstance(value, dict):
-                continue
+                raise NarwalCloudError("Consumables list response was invalid")
             type_id = _as_int(value.get("type"))
             code = _as_text(value.get("consumables_code"))
             key = code or f"type_{type_id}"
             reset_switch = value.get("reset_btn_switch")
+            total_duration = _consumable_duration(value.get("total_duration"))
+            # The App treats a missing usage duration as unused (e.g. right after
+            # a replacement); only malformed values invalidate the response.
+            usage_duration = _consumable_duration(value.get("usage_duration"))
             consumables.append(
                 ConsumableInfo(
                     key=key,
                     name=_as_text(value.get("name")) or f"Consumable {type_id}",
                     type_id=type_id,
                     category=_as_int(value.get("item_type")),
-                    total_duration=_as_int(value.get("total_duration")),
-                    usage_duration=_as_int(value.get("usage_duration")),
+                    total_duration=total_duration,
+                    usage_duration=usage_duration,
                     subtitle=_as_text(value.get("subtitle")),
                     code=code,
                     reset_supported=(
@@ -659,6 +665,21 @@ class NarwalCloudApi:
             for value in values
             if isinstance(value, dict) and value.get("resource_id")
         ]
+
+
+def _consumable_duration(value: Any) -> int:
+    """Parse a duration without turning malformed data into a fresh lifetime."""
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise NarwalCloudError("Consumables list response was invalid")
+    try:
+        parsed = int(value)
+        if parsed < 0 or (isinstance(value, float) and value != parsed):
+            raise ValueError
+        return parsed
+    except TypeError, ValueError, OverflowError:
+        raise NarwalCloudError("Consumables list response was invalid") from None
 
 
 def _as_int(value: Any) -> int:

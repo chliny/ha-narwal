@@ -4,6 +4,7 @@ from .client import (
     NarwalAuthenticationError,
     NarwalClient,
     NarwalCommandError,
+    NarwalCommandNotSentError,
     NarwalCommandTimeoutError,
     NarwalConnectionError,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "CloudAccount",
     "CloudDevice",
     "NarwalCommandError",
+    "NarwalCommandNotSentError",
     "NarwalCommandTimeoutError",
     "NarwalConnectionError",
     "NarwalAuthenticationError",

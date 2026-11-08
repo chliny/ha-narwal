@@ -70,6 +70,14 @@ class NarwalConnectionError(Exception):
     """Raised when the cloud or robot connection fails."""
 
 
+class NarwalCommandNotSentError(NarwalConnectionError):
+    """Raised when the transport failed before the command was published.
+
+    A command that never left the client cannot have been applied remotely, so
+    callers may retry it without guessing whether the device already acted.
+    """
+
+
 class NarwalAuthenticationError(NarwalConnectionError):
     """Raised when Narwal cloud credentials are no longer accepted."""
 
@@ -102,6 +110,8 @@ class NarwalClient:
         self.topic_prefix = f"/{product_id}"
         self.state = NarwalState()
         self.on_state_update: Callable[[NarwalState], None] | None = None
+        self.on_connection_lost: Callable[[], None] | None = None
+        self._robot_consumables_generation = 0
         self._robot_awake = False
         self._last_broadcast_time = 0.0
         self._last_display_map_time = 0.0
@@ -1101,22 +1111,45 @@ class NarwalClient:
             self.state.dry_mop_remaining_time_supported = True
         return response
 
+    def invalidate_robot_consumables(self) -> None:
+        """Invalidate the robot snapshot and any reads already in flight."""
+        self._robot_consumables_generation += 1
+        self.state.mqtt_consumables_available = False
+
     async def get_consumable_info(self) -> CommandResponse:
         """Read robot-side consumable maintenance/replacement status."""
+        return await self._fetch_consumable_info(allow_during_reset=False)
+
+    async def _fetch_consumable_info(self, *, allow_during_reset: bool) -> CommandResponse:
+        """Read consumables, committing only if no newer event superseded it."""
+        self.invalidate_robot_consumables()
+        generation = self._robot_consumables_generation
         response = await self.send_command(TOPIC_CMD_GET_CONSUMABLE_INFO)
         payload = response.data.get("1")
-        if isinstance(payload, dict) and all(
-            type(item) is int
-            for field in ("1", "2")
-            for item in (
-                payload.get(field, [])
-                if isinstance(payload.get(field, []), list)
-                else [payload[field]]
+        _LOGGER.debug(
+            "Consumable info response structure: fields=%s, payload_fields=%s",
+            {key: type(value).__name__ for key, value in response.data.items()},
+            (
+                {key: type(value).__name__ for key, value in payload.items()}
+                if isinstance(payload, dict)
+                else None
+            ),
+        )
+        if (
+            generation == self._robot_consumables_generation
+            and (allow_during_reset or not self.state.robot_consumable_reset_in_progress)
+            and isinstance(payload, dict)
+            and all(
+                isinstance(payload.get(field, []), list)
+                and all(type(item) is int for item in payload.get(field, []))
+                for field in ("1", "2")
             )
         ):
-            self.state.consumable_maintain_items = self._int_values(payload.get("1"))
-            self.state.consumable_replace_items = self._int_values(payload.get("2"))
+            # These are separate enum domains; never infer one from the other.
+            self.state.consumable_maintain_items = set(payload.get("1", []))
+            self.state.consumable_replace_items = set(payload.get("2", []))
             self.state.mqtt_consumables_supported = True
+            self.state.mqtt_consumables_available = True
         return response
 
     async def reset_consumable(self, *, category: str, protocol_value: int) -> CommandResponse:
@@ -1132,13 +1165,45 @@ class NarwalClient:
             raise ValueError("Unknown consumable protocol value")
         field = 1 if category == "maintain" else 2
         nested = self._encode_varint_field(field, protocol_value)
-        response = await self.send_command(
-            TOPIC_CMD_RESET_CONSUMABLE_INFO,
-            self._encode_bytes_field(1, nested),
-        )
-        if response.success:
-            await self.get_consumable_info()
-        return response
+        reset_key = (category, protocol_value)
+        if (
+            self.state.robot_consumable_reset_in_progress
+            or reset_key in self.state.robot_consumable_reset_uncertain
+        ):
+            raise NarwalCommandError(
+                "Consumable reset is already running or its outcome is unknown"
+            )
+        self.state.robot_consumable_reset_in_progress = True
+        self.state.robot_consumable_reset_uncertain.add(reset_key)
+        self.invalidate_robot_consumables()
+        try:
+            try:
+                response = await self.send_command(
+                    TOPIC_CMD_RESET_CONSUMABLE_INFO,
+                    self._encode_bytes_field(1, nested),
+                )
+            except NarwalCommandNotSentError:
+                # The command never left the client, so nothing was applied and
+                # the user may simply press again once the connection recovers.
+                self.state.robot_consumable_reset_uncertain.discard(reset_key)
+                raise
+            if response.result_code is not None:
+                self.state.robot_consumable_reset_uncertain.discard(reset_key)
+            if response.success:
+                try:
+                    # Keep the reset guarded until this confirmation read ends so a
+                    # second press cannot slip in between the ACK and the refresh.
+                    await self._fetch_consumable_info(allow_during_reset=True)
+                except NarwalConnectionError, NarwalCommandError:
+                    # The reset has already succeeded; a failed read must not be
+                    # reported as a failed write and invite a duplicate reset.
+                    _LOGGER.warning("Consumable reset succeeded but status refresh failed")
+            return response
+        finally:
+            self.state.robot_consumable_reset_in_progress = False
+            # Reject every read that was already in flight during the write; only
+            # a read started after this point may authorize the same reset again.
+            self.invalidate_robot_consumables()
 
     async def get_clean_plans(self) -> CommandResponse:
         """Read saved cleaning plans/quick tasks."""

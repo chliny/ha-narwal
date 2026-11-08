@@ -595,6 +595,10 @@ class NarwalState:
 
     # Cloud account metadata.
     consumables: dict[str, ConsumableInfo] = field(default_factory=dict)
+    # True only when the latest cloud consumable refresh succeeded.
+    cloud_consumables_available: bool = False
+    cloud_consumable_reset_in_progress: bool = False
+    cloud_consumable_reset_uncertain: set[int] = field(default_factory=set)
     notifications: list[NarwalNotification] = field(default_factory=list)
     notifications_loaded: bool = False  # A notification endpoint has succeeded at least once.
     latest_task_record: dict[str, Any] | None = None
@@ -615,6 +619,10 @@ class NarwalState:
     consumable_maintain_items: set[int] = field(default_factory=set)
     consumable_replace_items: set[int] = field(default_factory=set)
     mqtt_consumables_supported: bool = False
+    # True only when the latest robot consumable query returned a valid payload.
+    mqtt_consumables_available: bool = False
+    robot_consumable_reset_in_progress: bool = False
+    robot_consumable_reset_uncertain: set[tuple[str, int]] = field(default_factory=set)
     clean_plans: list[dict[str, Any]] = field(default_factory=list)
     clean_plans_supported: bool = False
     saved_maps: list[dict[str, Any]] = field(default_factory=list)

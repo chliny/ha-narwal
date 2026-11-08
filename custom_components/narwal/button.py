@@ -115,14 +115,19 @@ async def async_setup_entry(
             known.add("start_clean_plan")
             async_add_entities([NarwalStartCleanPlanButton(coordinator)])
         reset_entities: list[NarwalConsumableResetButton] = []
-        # Every cloud item that maps to an App reset action, whether or not the
-        # App currently enables its reset button, so the robot-side fallback
-        # below never duplicates an item the cloud already reports.
+        # Cloud-list reset buttons take precedence over the separate App
+        # maintenance-reminder acknowledgement for the same robot item.
         covered: set[tuple[str, int]] = set()
-        for consumable in state.consumables.values():
+        declared: set[tuple[str, int]] = set()
+        cloud_consumables_available = (
+            coordinator.cloud_metadata_available and state.cloud_consumables_available
+        )
+        for consumable in state.consumables.values() if cloud_consumables_available else ():
             protocol = _reset_protocol(consumable)
             if protocol is not None:
-                covered.add(protocol)
+                declared.add(protocol)
+                if consumable.reset_supported:
+                    covered.add(protocol)
             if not consumable.reset_supported:
                 continue
             key = f"reset_consumable_{consumable.key}"
@@ -162,7 +167,10 @@ async def async_setup_entry(
             key = f"reset_consumable_maintain_{value}"
             if protocol in covered or key in known:
                 continue
-            if not (state.mqtt_consumables_supported and value in state.consumable_maintain_items):
+            if not (
+                (state.mqtt_consumables_available and value in state.consumable_maintain_items)
+                or (cloud_consumables_available and protocol in declared)
+            ):
                 continue
             known.add(key)
             reset_entities.append(
@@ -328,6 +336,9 @@ class NarwalConsumableResetButton(NarwalEntity, ButtonEntity):
         state = self.coordinator.data
         if state is None:
             return False
+        cloud_consumables_available = (
+            self.coordinator.cloud_metadata_available and state.cloud_consumables_available
+        )
         item = (
             state.consumables.get(self._consumable_key)
             if self._consumable_key is not None
@@ -339,28 +350,47 @@ class NarwalConsumableResetButton(NarwalEntity, ButtonEntity):
                 and item.reset_supported
                 and item.type_id == self._consumable_type_id
                 and item.type_id in CONSUMABLE_CLOUD_RESET_TYPES
-                and self.coordinator.cloud_metadata_available
+                and not state.cloud_consumable_reset_in_progress
+                and item.type_id not in state.cloud_consumable_reset_uncertain
+                and cloud_consumables_available
             )
-        if not super().available or not state.mqtt_consumables_supported:
+        if (
+            not super().available
+            or not state.mqtt_consumables_supported
+            or state.robot_consumable_reset_in_progress
+            or (self._category, self._protocol_value) in state.robot_consumable_reset_uncertain
+        ):
             return False
         if self._consumable_key is not None:
             return bool(
-                item
+                cloud_consumables_available
+                and item
                 and item.reset_supported
                 and item.type_id == self._consumable_type_id
                 and _reset_protocol(item) == (self._category, self._protocol_value)
             )
-        # A robot-only fallback must stop accepting presses once the cloud
-        # reports the same item, including when the App disables its reset.
-        if any(
-            _reset_protocol(cloud_item) == (self._category, self._protocol_value)
+        # The App's maintenance reminder has its own acknowledgement route,
+        # even when the cloud detail-page reset button is hidden. Avoid two
+        # active buttons only when the corresponding cloud button is enabled.
+        if cloud_consumables_available and any(
+            cloud_item.reset_supported
+            and _reset_protocol(cloud_item) == (self._category, self._protocol_value)
             for cloud_item in state.consumables.values()
         ):
             return False
-        return self._protocol_value in (
+        reported_items = (
             state.consumable_maintain_items
             if self._category == "maintain"
             else state.consumable_replace_items
+        )
+        return (
+            state.mqtt_consumables_available and self._protocol_value in reported_items
+        ) or bool(
+            cloud_consumables_available
+            and any(
+                _reset_protocol(cloud_item) == (self._category, self._protocol_value)
+                for cloud_item in state.consumables.values()
+            )
         )
 
     async def async_press(self) -> None:
@@ -370,21 +400,30 @@ class NarwalConsumableResetButton(NarwalEntity, ButtonEntity):
                 translation_domain=DOMAIN,
                 translation_key="consumable_reset_unavailable",
             )
-        if self._category == "cloud":
-            await self._async_await_cloud_reset()
-        else:
-            response = await self._async_await_command(
-                self.coordinator.client.reset_consumable(
-                    category=self._category,
-                    protocol_value=self._protocol_value,
-                ),
-                "reset consumable",
-            )
-            if not response.success:
-                raise HomeAssistantError(
-                    f"Narwal action failed with result code {response.result_code}"
+        try:
+            if self._category == "cloud":
+                await self._async_await_cloud_reset()
+            else:
+                response = await self._async_await_command(
+                    self.coordinator.client.reset_consumable(
+                        category=self._category,
+                        protocol_value=self._protocol_value,
+                    ),
+                    "reset consumable",
                 )
-        await self.coordinator.async_request_refresh()
+                if not response.success:
+                    raise HomeAssistantError(
+                        f"Narwal action failed with result code {response.result_code}"
+                    )
+        finally:
+            # Publish unknown-outcome guards even when the write raises or is cancelled.
+            self.coordinator.async_update_listeners()
+        try:
+            await self.coordinator.async_request_refresh()
+        except Exception:
+            # A confirmed write must not be reported as failed only because the
+            # follow-up read failed; that would invite a duplicate reset.
+            _LOGGER.warning("Consumable reset refresh failed", exc_info=True)
 
     async def _async_await_cloud_reset(self) -> None:
         """Translate cloud failures without exposing device identifiers."""

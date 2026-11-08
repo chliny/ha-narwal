@@ -73,7 +73,19 @@ class NarwalConsumableReminderSensor(NarwalEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True while any consumable needs attention."""
-        return bool(self.attention_items)
+        if self.attention_items:
+            return True
+        state = self.coordinator.data
+        if (
+            state is None
+            or not state.mqtt_consumables_available
+            or any(
+                item.total_duration <= 0 and item.usage_duration > 0
+                for item in state.consumables.values()
+            )
+        ):
+            return None
+        return False
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
@@ -82,10 +94,13 @@ class NarwalConsumableReminderSensor(NarwalEntity, BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        """Require cloud lifetime data so an empty fetch cannot read as OK."""
+        """Require current lifetime data so stale or empty fetches cannot read as OK."""
         state = self.coordinator.data
         return bool(
-            self.coordinator.cloud_metadata_available and state is not None and state.consumables
+            self.coordinator.cloud_metadata_available
+            and state is not None
+            and state.cloud_consumables_available
+            and state.consumables
         )
 
     @property
@@ -113,7 +128,7 @@ class NarwalConsumableReminderSensor(NarwalEntity, BinarySensorEntity):
         reasons: list[str] = []
         if consumable.remaining_percentage == 0:
             reasons.append("depleted")
-        if state is not None and state.mqtt_consumables_supported:
+        if state is not None and state.mqtt_consumables_available:
             maintain = consumable.category == 1
             mapping = CONSUMABLE_MAINTAIN_TYPE_MAP if maintain else CONSUMABLE_REPLACE_TYPE_MAP
             protocol_value = mapping.get(consumable.type_id)
